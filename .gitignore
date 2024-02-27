@@ -134,3 +134,6 @@ dist
 
 # Ignore large image data files that hold heightmap data
 *.tif
+
+# Ignore expected output files.
+dijkstra.png
