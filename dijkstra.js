@@ -117,8 +117,8 @@ async function Main() {
   console.log('edges:', edgeCount);
   // Floodfill starting from center pixel to determine reachability.
   console.log('Calculating reachability');
-  const centerX = 344;
-  const centerY = 434;
+  const centerX = 815;
+  const centerY = 357;
   const centerIndex = centerX * mx + centerY * my;
   const floodNext = {};
   floodNext[centerIndex] = 0;
