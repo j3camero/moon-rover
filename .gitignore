@@ -136,4 +136,4 @@ dist
 *.tif
 
 # Ignore expected output files.
-dijkstra.png
+*.png
