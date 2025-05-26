@@ -233,23 +233,38 @@ async function Main() {
       }
       return 0;
     });
-    let maxTraffic = 0;
-    for (const i in vertices) {
-      const v = vertices[i];
-      const t = v.traffic || 0;
-      maxTraffic = Math.max(t, maxTraffic);
-    }
-    const logMax = Math.log(maxTraffic);
     console.log('Marking top vertices with color.');
+    for (let k = 0; k < 1000 && k < verticesInCostOrder.length; k++) {
+      const v = verticesInCostOrder[k];
+      v.color = 'rgb(255, 255, 0)';  // Yellow
+    }
+    for (let k = 1000; k < 10000 && k < verticesInCostOrder.length; k++) {
+      const v = verticesInCostOrder[k];
+      v.color = 'rgb(255, 128, 0)';  // Orange
+    }
+    for (let k = 10000; k < 20000 && k < verticesInCostOrder.length; k++) {
+      const v = verticesInCostOrder[k];
+      v.color = 'rgb(255, 0, 0)';  // Red
+    }
+    console.log('Color gradient for minor roads.');
+    let maxTrafficForGradient = 1;
+    if (verticesInCostOrder.length >= 20000) {
+      maxTrafficForGradient = verticesInCostOrder[20000].traffic;
+    }
     for (const i in vertices) {
       const v = vertices[i];
       const t = v.traffic;
-      if (t) {
-        if (t > 1) {
-          const alpha = Math.log(t) / logMax;
-          v.color = `rgba(255,0,0,${alpha})`;
-        }
+      if (!t) {
+        continue;
       }
+      if (t < 1) {
+        continue;
+      }
+      if (v.color) {
+        continue;
+      }
+      const alpha = t / maxTrafficForGradient;
+      v.color = `rgba(255,0,0,${alpha})`;
     }
     console.log('Drawing canvas.');
     const canvas = createCanvas(w, h);
