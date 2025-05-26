@@ -1,6 +1,7 @@
 const { createCanvas } = require('canvas');
 const fs = require('fs')
 const { Image } = require('image-js');
+const { PriorityQueue } = require('@datastructures-js/priority-queue');
 
 // Radius of the moon.
 const moonRadius = 1727400;
@@ -143,7 +144,7 @@ async function Main() {
   console.log('Navmesh initialized');
   console.log('vertices:', n);
   console.log('edges:', edgeCount);
-  const trials = 1000;
+  const trials = 5;
   for (let trial = 0; trial < trials; trial++) {
     console.log('Floodfill trial', trial);
     for (const i in vertices) {
@@ -156,45 +157,30 @@ async function Main() {
     const [centerX, centerY] = ChooseRandomPixel();
     console.log('center', centerX, centerY);
     const centerIndex = centerX * mx + centerY * my;
-    const floodNext = {};
-    floodNext[centerIndex] = 0;
+    const pq = new PriorityQueue((a, b) => (a.f - b.f));
+    pq.enqueue({ i: centerIndex, f: 0 });
     const verticesInCostOrder = [];
-    let queueSize = 1;
-    let count = 0;
-    let remotestIndex;
-    while (queueSize > 0) {
-      let i;
-      let minCost;
-      for (const j in floodNext) {
-        const cost = floodNext[j];
-        if ((!minCost && minCost !== 0) || (minCost && cost < minCost)) {
-          minCost = cost;
-          i = j;
-        }
-      }
-      if (count % 100000 === 0) {
-        const formattedProgressPercent = (100 * count / n).toFixed(2);
-        console.log(formattedProgressPercent, '%');
-      }
-      count++;
-      delete floodNext[i];
-      queueSize--;
+    let progressCount = 0;
+    while (pq.size() > 0) {
+      const floodNext = pq.dequeue();
+      const i = floodNext.i;
+      const minCost = floodNext.f;
       const v = vertices[i];
+      if (v.reachable) {
+        continue;
+      }
       v.reachable = true;
       v.drivingTimeFromOrigin = minCost;
-      remotestIndex = i;
+      if (progressCount % 100000 === 0) {
+        const formattedProgressPercent = (100 * progressCount / n).toFixed(2);
+        console.log(formattedProgressPercent, '%');
+      }
+      progressCount++;
       verticesInCostOrder.push(v);
       for (const j in v.edges) {
         if (!vertices[j].reachable) {
           const newCost = v.drivingTimeFromOrigin + v.edges[j];
-          if (j in floodNext) {
-            if (newCost < floodNext[j]) {
-              floodNext[j] = newCost;
-            }
-          } else {
-            floodNext[j] = newCost;
-            queueSize++;
-          }
+          pq.enqueue({ i: j, f: newCost });
         }
       }
     }
@@ -263,7 +249,7 @@ async function Main() {
       if (v.color) {
         continue;
       }
-      const alpha = t / maxTrafficForGradient;
+      const alpha = Math.min(1, t / maxTrafficForGradient);
       v.color = `rgba(255,0,0,${alpha})`;
     }
     console.log('Drawing canvas.');
