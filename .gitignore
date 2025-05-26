@@ -129,8 +129,9 @@ dist
 .yarn/install-state.gz
 .pnp.*
 
-# Ignore temporary emacs files
+# Ignore temporary files
 *~
+*.Identifier
 
 # Ignore large image data files that hold heightmap data
 *.tif

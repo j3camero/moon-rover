@@ -48,7 +48,7 @@ async function OutputCanvasAsPngFile(canvas, filename) {
 
 async function Main() {
   console.log('Loading heighmap');
-  const image = await Image.load('ldem_4_uint.tif');
+  const image = await Image.load('ldem_16_uint.tif');
   const w = image.width;
   const h = image.height;
   const mx = image.multiplierX;
@@ -94,7 +94,8 @@ async function Main() {
 
   function ChooseRandomPixel() {
     const x = Math.floor(Math.random() * w);
-    const y = Math.floor(Math.random() * h);
+    const spherical = 0.5 + Math.asin(2 * Math.random() - 1) / Math.PI;
+    const y = Math.floor(spherical * h);
     return [x, y];
   }
 
@@ -144,7 +145,7 @@ async function Main() {
   console.log('Navmesh initialized');
   console.log('vertices:', n);
   console.log('edges:', edgeCount);
-  const trials = 5;
+  const trials = 999999;
   for (let trial = 0; trial < trials; trial++) {
     console.log('Floodfill trial', trial);
     for (const i in vertices) {
