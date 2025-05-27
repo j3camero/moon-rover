@@ -174,7 +174,7 @@ async function Main() {
       v.drivingTimeFromOrigin = minCost;
       if (progressCount % 100000 === 0) {
         const formattedProgressPercent = (100 * progressCount / n).toFixed(2);
-        console.log(formattedProgressPercent, '%');
+        console.log('Trial', trial, '-', formattedProgressPercent, '%');
       }
       progressCount++;
       verticesInCostOrder.push(v);
@@ -221,22 +221,34 @@ async function Main() {
       return 0;
     });
     console.log('Marking top vertices with color.');
-    for (let k = 0; k < 1000 && k < verticesInCostOrder.length; k++) {
+    for (let k = 0; k < 10 && k < verticesInCostOrder.length; k++) {
       const v = verticesInCostOrder[k];
-      v.color = 'rgb(255, 255, 0)';  // Yellow
+      v.color = 'rgb(255, 0, 255)';  // Purple
+    }
+    for (let k = 10; k < 100 && k < verticesInCostOrder.length; k++) {
+      const v = verticesInCostOrder[k];
+      v.color = 'rgb(0, 0, 255)';  // Blue
+    }
+    for (let k = 100; k < 1000 && k < verticesInCostOrder.length; k++) {
+      const v = verticesInCostOrder[k];
+      v.color = 'rgb(0, 255, 0)';  // Green
     }
     for (let k = 1000; k < 10000 && k < verticesInCostOrder.length; k++) {
       const v = verticesInCostOrder[k];
+      v.color = 'rgb(255, 255, 0)';  // Yellow
+    }
+    for (let k = 10000; k < 100000 && k < verticesInCostOrder.length; k++) {
+      const v = verticesInCostOrder[k];
       v.color = 'rgb(255, 128, 0)';  // Orange
     }
-    for (let k = 10000; k < 20000 && k < verticesInCostOrder.length; k++) {
+    for (let k = 100000; k < 200000 && k < verticesInCostOrder.length; k++) {
       const v = verticesInCostOrder[k];
       v.color = 'rgb(255, 0, 0)';  // Red
     }
     console.log('Color gradient for minor roads.');
     let maxTrafficForGradient = 1;
-    if (verticesInCostOrder.length >= 20000) {
-      maxTrafficForGradient = verticesInCostOrder[20000].traffic;
+    if (verticesInCostOrder.length >= 200000) {
+      maxTrafficForGradient = verticesInCostOrder[200000].traffic;
     }
     for (const i in vertices) {
       const v = vertices[i];
@@ -270,6 +282,18 @@ async function Main() {
     }
     const filename = `approximate-${trial}.png`;
     await OutputCanvasAsPngFile(canvas, filename);
+    console.log('Drawing black canvas.');
+    ctx.fillStyle = `rgb(0,0,0)`;
+    ctx.fillRect(0, 0, w, h);
+    for (const i in vertices) {
+      const v = vertices[i];
+      if (v.color) {
+        ctx.fillStyle = v.color;
+        ctx.fillRect(v.x, v.y, 1, 1);
+      }
+    }
+    const filenameBlackImage = `approximate-${trial}-black.png`;
+    await OutputCanvasAsPngFile(canvas, filenameBlackImage);
   }
   console.log('Done.');
 }
