@@ -87,34 +87,24 @@ async function Main() {
     }
     const topSpeedOnLevelGroundMetersPerSecond = 10;
     const slowdown = slope / maxClimbableSlope;
-    let degreeGridLineSpeedBonus = 1;
+    let degreeGridLineSpeedBonus = 0.35;
     if (a.x === b.x) {
-      const leftDeg = Math.ceil(360 * a.x / w);
-      const rightDeg = Math.ceil(360 * (a.x + 1) / w);
-      if (leftDeg !== rightDeg) {
+      const leftDec = Math.ceil(2 * 36 * a.x / w);
+      const rightDec = Math.ceil(2 * 36 * (a.x + 1) / w);
+      if (leftDec !== rightDec && (a.x / w > 0.27) && (a.x / w < 0.66)) {
         degreeGridLineSpeedBonus = 1;
-      }
-      const leftDec = Math.ceil(36 * a.x / w);
-      const rightDec = Math.ceil(36 * (a.x + 1) / w);
-      if (leftDec !== rightDec && leftDec >= 10 && leftDec <= 21) {
-        degreeGridLineSpeedBonus = 2;
       }
     }
     if (a.y === b.y) {
-      const topDeg = Math.ceil(180 * a.y / h);
-      const bottomDeg = Math.ceil(180 * (a.y + 1) / h);
-      if (topDeg !== bottomDeg) {
+      const topDec = Math.ceil(2 * 18 * a.y / h);
+      const bottomDec = Math.ceil(2 * 18 * (a.y + 1) / h);
+      if (topDec !== bottomDec && (a.y / h > 0.17) && (a.y / h < 0.68)) {
         degreeGridLineSpeedBonus = 1;
       }
-      const topDec = Math.ceil(18 * a.y / h);
-      const bottomDec = Math.ceil(18 * (a.y + 1) / h);
-      if (topDec !== bottomDec && topDec >= 3 && topDec <= 12) {
-        degreeGridLineSpeedBonus = 2;
-      }
     }
-    // const maxGridLineBonusSlope = 0.01;
-    // const flatnessMultiplier = 1 - Math.min(1, slope / maxGridLineBonusSlope);
-    // degreeGridLineSpeedBonus = 1 + flatnessMultiplier * (degreeGridLineSpeedBonus - 1);
+    const maxGridLineBonusSlope = 0.01;
+    const flatnessMultiplier = 1 - Math.min(1, slope / maxGridLineBonusSlope);
+    degreeGridLineSpeedBonus = 1 + flatnessMultiplier * (degreeGridLineSpeedBonus - 1);
     const speed = topSpeedOnLevelGroundMetersPerSecond *
                   (1 - slowdown) *
                   degreeGridLineSpeedBonus;
