@@ -87,24 +87,27 @@ async function Main() {
     }
     const topSpeedOnLevelGroundMetersPerSecond = 10;
     const slowdown = slope / maxClimbableSlope;
-    let degreeGridLineSpeedBonus = 0.35;
+    let degreeGridLineSpeedBonus = 1;
+    if ((a.x / w > 0.27) && (a.x / w < 0.66) && (a.y / h > 0.18) && (a.y / h < 0.68)) {
+      degreeGridLineSpeedBonus = 0.5;
+    }
     if (a.x === b.x) {
-      const leftDec = Math.ceil(2 * 36 * a.x / w);
-      const rightDec = Math.ceil(2 * 36 * (a.x + 1) / w);
-      if (leftDec !== rightDec && (a.x / w > 0.27) && (a.x / w < 0.66)) {
+      const leftGrid = Math.ceil(2 * 36 * a.x / w);
+      const rightGrid = Math.ceil(2 * 36 * (a.x + 1) / w);
+      if (leftGrid !== rightGrid) {
         degreeGridLineSpeedBonus = 1;
       }
     }
     if (a.y === b.y) {
-      const topDec = Math.ceil(2 * 18 * a.y / h);
-      const bottomDec = Math.ceil(2 * 18 * (a.y + 1) / h);
-      if (topDec !== bottomDec && (a.y / h > 0.17) && (a.y / h < 0.68)) {
+      const topGrid = Math.ceil(2 * 18 * a.y / h);
+      const bottomGrid = Math.ceil(2 * 18 * (a.y + 1) / h);
+      if (topGrid !== bottomGrid) {
         degreeGridLineSpeedBonus = 1;
       }
     }
-    const maxGridLineBonusSlope = 0.01;
-    const flatnessMultiplier = 1 - Math.min(1, slope / maxGridLineBonusSlope);
-    degreeGridLineSpeedBonus = 1 + flatnessMultiplier * (degreeGridLineSpeedBonus - 1);
+    // const maxGridLineBonusSlope = 0.01;
+    // const flatnessMultiplier = 1 - Math.min(1, slope / maxGridLineBonusSlope);
+    // degreeGridLineSpeedBonus = 1 + flatnessMultiplier * (degreeGridLineSpeedBonus - 1);
     const speed = topSpeedOnLevelGroundMetersPerSecond *
                   (1 - slowdown) *
                   degreeGridLineSpeedBonus;
