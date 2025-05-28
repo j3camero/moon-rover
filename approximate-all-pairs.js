@@ -48,7 +48,7 @@ async function OutputCanvasAsPngFile(canvas, filename) {
 
 async function Main() {
   console.log('Loading heighmap');
-  const image = await Image.load('ldem_16_uint.tif');
+  const image = await Image.load('ldem_4_uint.tif');
   const w = image.width;
   const h = image.height;
   const mx = image.multiplierX;
@@ -81,13 +81,43 @@ async function Main() {
                                        b.x3D, b.y3D, b.z3D);
     const elevationChange = Math.abs(a.elevationMeters - b.elevationMeters);
     const slope = elevationChange / drivingDistance;
-    const maxClimbableSlope = 0.064;
+    const maxClimbableSlope = 0.05;
     if (slope >= maxClimbableSlope) {
       return null;
     }
     const topSpeedOnLevelGroundMetersPerSecond = 10;
     const slowdown = slope / maxClimbableSlope;
-    const speed = topSpeedOnLevelGroundMetersPerSecond * (1 - slowdown);
+    let degreeGridLineSpeedBonus = 1;
+    if (a.x === b.x) {
+      const leftDeg = Math.ceil(360 * a.x / w);
+      const rightDeg = Math.ceil(360 * (a.x + 1) / w);
+      if (leftDeg !== rightDeg) {
+        degreeGridLineSpeedBonus = 1;
+      }
+      const leftDec = Math.ceil(36 * a.x / w);
+      const rightDec = Math.ceil(36 * (a.x + 1) / w);
+      if (leftDec !== rightDec && leftDec >= 10 && leftDec <= 21) {
+        degreeGridLineSpeedBonus = 2;
+      }
+    }
+    if (a.y === b.y) {
+      const topDeg = Math.ceil(180 * a.y / h);
+      const bottomDeg = Math.ceil(180 * (a.y + 1) / h);
+      if (topDeg !== bottomDeg) {
+        degreeGridLineSpeedBonus = 1;
+      }
+      const topDec = Math.ceil(18 * a.y / h);
+      const bottomDec = Math.ceil(18 * (a.y + 1) / h);
+      if (topDec !== bottomDec && topDec >= 3 && topDec <= 12) {
+        degreeGridLineSpeedBonus = 2;
+      }
+    }
+    // const maxGridLineBonusSlope = 0.01;
+    // const flatnessMultiplier = 1 - Math.min(1, slope / maxGridLineBonusSlope);
+    // degreeGridLineSpeedBonus = 1 + flatnessMultiplier * (degreeGridLineSpeedBonus - 1);
+    const speed = topSpeedOnLevelGroundMetersPerSecond *
+                  (1 - slowdown) *
+                  degreeGridLineSpeedBonus;
     const drivingTime = drivingDistance / speed;
     return drivingTime;
   }
@@ -162,6 +192,7 @@ async function Main() {
     pq.enqueue({ i: centerIndex, f: 0 });
     const verticesInCostOrder = [];
     let progressCount = 0;
+    let nextPercentToReport = 0;
     while (pq.size() > 0) {
       const floodNext = pq.dequeue();
       const i = floodNext.i;
@@ -172,11 +203,12 @@ async function Main() {
       }
       v.reachable = true;
       v.drivingTimeFromOrigin = minCost;
-      if (progressCount % 100000 === 0) {
-        const formattedProgressPercent = (100 * progressCount / n).toFixed(2);
-        console.log('Trial', trial, '-', formattedProgressPercent, '%');
-      }
       progressCount++;
+      const progressPercent = 100 * progressCount / n;
+      if (progressPercent > nextPercentToReport) {
+        console.log('Trial', trial, '-', nextPercentToReport, '%');
+        nextPercentToReport += 10;
+      }
       verticesInCostOrder.push(v);
       for (const j in v.edges) {
         if (!vertices[j].reachable) {
@@ -210,6 +242,10 @@ async function Main() {
         vertices[bestEdge].catchment = (vertices[bestEdge].catchment || vertices[bestEdge].area) + v.catchment;
       }
     }
+    if (trial % 10 > 0) {
+      console.log('Skipping render stage.');
+      continue;
+    }
     console.log('Sorting vertices.');
     verticesInCostOrder.sort((a, b) => {
       if (a.traffic < b.traffic) {
@@ -221,34 +257,43 @@ async function Main() {
       return 0;
     });
     console.log('Marking top vertices with color.');
-    for (let k = 0; k < 10 && k < verticesInCostOrder.length; k++) {
+    const orangePixelCount = Math.floor(n / 100);
+    const redPixelCount = Math.floor(orangePixelCount * 2);
+    const yellowPixelCount = Math.floor(orangePixelCount / 10);
+    const greenPixelCount = Math.floor(yellowPixelCount / 10);
+    const bluePixelCount = Math.floor(greenPixelCount / 10);
+    const purplePixelCount = Math.floor(bluePixelCount / 10);
+    console.log('Color counts:',
+                purplePixelCount, bluePixelCount, greenPixelCount,
+                yellowPixelCount, orangePixelCount, redPixelCount);
+    for (let k = 0; k < purplePixelCount && k < verticesInCostOrder.length; k++) {
       const v = verticesInCostOrder[k];
-      v.color = 'rgb(255, 0, 255)';  // Purple
+      v.color = 'rgb(255, 32, 255)';  // Purple
     }
-    for (let k = 10; k < 100 && k < verticesInCostOrder.length; k++) {
+    for (let k = purplePixelCount; k < bluePixelCount && k < verticesInCostOrder.length; k++) {
       const v = verticesInCostOrder[k];
-      v.color = 'rgb(0, 0, 255)';  // Blue
+      v.color = 'rgb(32, 32, 255)';  // Blue
     }
-    for (let k = 100; k < 1000 && k < verticesInCostOrder.length; k++) {
+    for (let k = bluePixelCount; k < greenPixelCount && k < verticesInCostOrder.length; k++) {
       const v = verticesInCostOrder[k];
-      v.color = 'rgb(0, 255, 0)';  // Green
+      v.color = 'rgb(32, 255, 32)';  // Green
     }
-    for (let k = 1000; k < 10000 && k < verticesInCostOrder.length; k++) {
+    for (let k = greenPixelCount; k < yellowPixelCount && k < verticesInCostOrder.length; k++) {
       const v = verticesInCostOrder[k];
       v.color = 'rgb(255, 255, 0)';  // Yellow
     }
-    for (let k = 10000; k < 100000 && k < verticesInCostOrder.length; k++) {
+    for (let k = yellowPixelCount; k < orangePixelCount && k < verticesInCostOrder.length; k++) {
       const v = verticesInCostOrder[k];
       v.color = 'rgb(255, 128, 0)';  // Orange
     }
-    for (let k = 100000; k < 200000 && k < verticesInCostOrder.length; k++) {
+    for (let k = orangePixelCount; k < redPixelCount && k < verticesInCostOrder.length; k++) {
       const v = verticesInCostOrder[k];
       v.color = 'rgb(255, 0, 0)';  // Red
     }
     console.log('Color gradient for minor roads.');
     let maxTrafficForGradient = 1;
-    if (verticesInCostOrder.length >= 200000) {
-      maxTrafficForGradient = verticesInCostOrder[200000].traffic;
+    if (verticesInCostOrder.length >= redPixelCount) {
+      maxTrafficForGradient = verticesInCostOrder[redPixelCount].traffic;
     }
     for (const i in vertices) {
       const v = vertices[i];
