@@ -89,25 +89,22 @@ async function Main() {
     const slowdown = slope / maxClimbableSlope;
     let degreeGridLineSpeedBonus = 1;
     if ((a.x / w > 0.28) && (a.x / w < 0.59) && (a.y / h > 0.20) && (a.y / h < 0.60)) {
-      degreeGridLineSpeedBonus = 0.35;
-    }
-    if (a.x === b.x) {
-      const leftGrid = Math.ceil(36 * a.x / w);
-      const rightGrid = Math.ceil(36 * (a.x + 1) / w);
-      if (leftGrid !== rightGrid) {
-        degreeGridLineSpeedBonus = 1;
+      degreeGridLineSpeedBonus = 0.7;
+      if (a.x === b.x) {
+        const leftGrid = Math.ceil(360 * a.x / w);
+        const rightGrid = Math.ceil(360 * (a.x + 1) / w);
+        if (leftGrid !== rightGrid) {
+          degreeGridLineSpeedBonus = 2;
+        }
+      }
+      if (a.y === b.y) {
+        const topGrid = Math.ceil(180 * a.y / h);
+        const bottomGrid = Math.ceil(180 * (a.y + 1) / h);
+        if (topGrid !== bottomGrid) {
+          degreeGridLineSpeedBonus = 2;
+        }
       }
     }
-    if (a.y === b.y) {
-      const topGrid = Math.ceil(18 * a.y / h);
-      const bottomGrid = Math.ceil(18 * (a.y + 1) / h);
-      if (topGrid !== bottomGrid) {
-        degreeGridLineSpeedBonus = 1;
-      }
-    }
-    // const maxGridLineBonusSlope = 0.01;
-    // const flatnessMultiplier = 1 - Math.min(1, slope / maxGridLineBonusSlope);
-    // degreeGridLineSpeedBonus = 1 + flatnessMultiplier * (degreeGridLineSpeedBonus - 1);
     const speed = topSpeedOnLevelGroundMetersPerSecond *
                   (1 - slowdown) *
                   degreeGridLineSpeedBonus;
@@ -235,7 +232,7 @@ async function Main() {
         vertices[bestEdge].catchment = (vertices[bestEdge].catchment || vertices[bestEdge].area) + v.catchment;
       }
     }
-    if (trial % 10 > 0) {
+    if (((trial % 10) > 0) && (trial > 10)) {
       console.log('Skipping render stage.');
       continue;
     }
