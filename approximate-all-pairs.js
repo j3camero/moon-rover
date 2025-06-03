@@ -48,7 +48,7 @@ async function OutputCanvasAsPngFile(canvas, filename) {
 
 async function Main() {
   console.log('Loading heighmap');
-  const image = await Image.load('ldem_4_uint.tif');
+  const image = await Image.load('ldem_16_uint.tif');
   const w = image.width;
   const h = image.height;
   const mx = image.multiplierX;
@@ -88,19 +88,19 @@ async function Main() {
     const topSpeedOnLevelGroundMetersPerSecond = 10;
     const slowdown = slope / maxClimbableSlope;
     let degreeGridLineSpeedBonus = 1;
-    if ((a.x / w > 0.27) && (a.x / w < 0.66) && (a.y / h > 0.18) && (a.y / h < 0.68)) {
-      degreeGridLineSpeedBonus = 0.5;
+    if ((a.x / w > 0.28) && (a.x / w < 0.59) && (a.y / h > 0.20) && (a.y / h < 0.60)) {
+      degreeGridLineSpeedBonus = 0.35;
     }
     if (a.x === b.x) {
-      const leftGrid = Math.ceil(2 * 36 * a.x / w);
-      const rightGrid = Math.ceil(2 * 36 * (a.x + 1) / w);
+      const leftGrid = Math.ceil(36 * a.x / w);
+      const rightGrid = Math.ceil(36 * (a.x + 1) / w);
       if (leftGrid !== rightGrid) {
         degreeGridLineSpeedBonus = 1;
       }
     }
     if (a.y === b.y) {
-      const topGrid = Math.ceil(2 * 18 * a.y / h);
-      const bottomGrid = Math.ceil(2 * 18 * (a.y + 1) / h);
+      const topGrid = Math.ceil(18 * a.y / h);
+      const bottomGrid = Math.ceil(18 * (a.y + 1) / h);
       if (topGrid !== bottomGrid) {
         degreeGridLineSpeedBonus = 1;
       }
