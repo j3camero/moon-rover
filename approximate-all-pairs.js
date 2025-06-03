@@ -87,27 +87,7 @@ async function Main() {
     }
     const topSpeedOnLevelGroundMetersPerSecond = 10;
     const slowdown = slope / maxClimbableSlope;
-    let degreeGridLineSpeedBonus = 1;
-    if ((a.x / w > 0.28) && (a.x / w < 0.59) && (a.y / h > 0.20) && (a.y / h < 0.60)) {
-      degreeGridLineSpeedBonus = 0.7;
-      if (a.x === b.x) {
-        const leftGrid = Math.ceil(360 * a.x / w);
-        const rightGrid = Math.ceil(360 * (a.x + 1) / w);
-        if (leftGrid !== rightGrid) {
-          degreeGridLineSpeedBonus = 2;
-        }
-      }
-      if (a.y === b.y) {
-        const topGrid = Math.ceil(180 * a.y / h);
-        const bottomGrid = Math.ceil(180 * (a.y + 1) / h);
-        if (topGrid !== bottomGrid) {
-          degreeGridLineSpeedBonus = 2;
-        }
-      }
-    }
-    const speed = topSpeedOnLevelGroundMetersPerSecond *
-                  (1 - slowdown) *
-                  degreeGridLineSpeedBonus;
+    const speed = topSpeedOnLevelGroundMetersPerSecond * (1 - slowdown);
     const drivingTime = drivingDistance / speed;
     return drivingTime;
   }
@@ -139,7 +119,8 @@ async function Main() {
       const latitudeRadians = Math.PI * latP;  // Range (0, pi)
       const area = Math.sin(latitudeRadians);
       const edges = {};
-      vertices[i] = { area, edges, elevationMeters, x, y, x3D, y3D, z3D };
+      const km = {};
+      vertices[i] = { area, edges, elevationMeters, km, x, y, x3D, y3D, z3D };
       minElevation = Math.min(elevationMeters, minElevation);
       maxElevation = Math.max(elevationMeters, maxElevation);
     }
@@ -165,6 +146,40 @@ async function Main() {
   console.log('Navmesh initialized');
   console.log('vertices:', n);
   console.log('edges:', edgeCount);
+  console.log('Calculating knight moves');
+  let knightMoveCount = 0;
+  const knightMoves = [
+    [2, 1],
+    [1, 2],
+    [-1, 2],
+    [-2, 1],
+    [-2, -1],
+    [-1, -2],
+    [1, -2],
+    [2, -1],
+  ];
+  for (const i in vertices) {
+    const v = vertices[i];
+    const degree = Object.keys(v.edges).length;
+    if (degree < 8) {
+      continue;
+    }
+    for (const [dx, dy] of knightMoves) {
+      const x2 = (v.x + dx + w) % w;  // The world wraps around horizontally.
+      const y2 = v.y + dy;  // ...but not vertically over the poles.
+      if (y2 < 0 || y2 >= h) {
+        continue;
+      }
+      const j = x2 * mx + y2 * my;
+      const destination = vertices[j];
+      const t = CalculateTravelTimeBetweenVertices(v, destination);
+      if (t) {
+        v.km[j] = t;
+        knightMoveCount++;
+      }
+    }
+  }
+  console.log('knightMoveCount:', knightMoveCount);
   const trials = 999999;
   for (let trial = 0; trial < trials; trial++) {
     console.log('Floodfill trial', trial);
@@ -203,6 +218,12 @@ async function Main() {
       for (const j in v.edges) {
         if (!vertices[j].reachable) {
           const newCost = v.drivingTimeFromOrigin + v.edges[j];
+          pq.enqueue({ i: j, f: newCost });
+        }
+      }
+      for (const j in v.km) {
+        if (!vertices[j].reachable) {
+          const newCost = v.drivingTimeFromOrigin + v.km[j];
           pq.enqueue({ i: j, f: newCost });
         }
       }
