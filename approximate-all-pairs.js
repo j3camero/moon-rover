@@ -46,6 +46,15 @@ async function OutputCanvasAsPngFile(canvas, filename) {
   });
 }
 
+function GCD(a, b) {
+  a = Math.abs(a);
+  b = Math.abs(b);
+  if (b === 0) {
+    return a;
+  }
+  return GCD(b, a % b);
+}
+
 async function Main() {
   console.log('Loading heighmap');
   const image = await Image.load('ldem_16_uint.tif');
@@ -120,7 +129,8 @@ async function Main() {
       const area = Math.sin(latitudeRadians);
       const edges = {};
       const km = {};
-      vertices[i] = { area, edges, elevationMeters, km, x, y, x3D, y3D, z3D };
+      const traffic = 0;
+      vertices[i] = { area, edges, elevationMeters, km, traffic, x, y, x3D, y3D, z3D };
       minElevation = Math.min(elevationMeters, minElevation);
       maxElevation = Math.max(elevationMeters, maxElevation);
     }
@@ -147,39 +157,141 @@ async function Main() {
   console.log('vertices:', n);
   console.log('edges:', edgeCount);
   console.log('Calculating knight moves');
+  const maxRadiusForKnightMoves = 5.1;
+  const minRadiusForKnightMoves = 1.9;
+  const maxR2 = maxRadiusForKnightMoves * maxRadiusForKnightMoves;
+  const minR2 = minRadiusForKnightMoves * minRadiusForKnightMoves;
+
+  function ApproximateStraightLineTravelCost(x0, y0, dx, dy) {
+    if (!dx || !dy) {
+      // Shortcuts have to be diagonal. No driving along the axes.
+      return -1;
+    }
+    if (y0 + dy < 0 || y0 + dy >= h) {
+      // No shortcuts over top of the poles. Yes shortcuts around the equator.
+      return -1;
+    }
+    if (GCD(dx, dy) > 1) {
+      // Non-coprime paths are redundant. Let the algorithm discover those on
+      // its own.
+      return -1;
+    }
+    const adx = Math.abs(dx);
+    const ady = Math.abs(dy);
+    const isVertical = (ady > adx);
+    let totalTravelCost = 0;
+    let x = 0;
+    let y = 0;
+    do  {
+      let nextX;
+      let nextY;
+      if (isVertical) {
+        nextY = y + Math.sign(dy);
+        nextX = Math.round(nextY * dx / dy);
+      } else {
+        nextX = x + Math.sign(dx);
+        nextY = Math.round(nextX * dy / dx);
+      }
+      const thisIndex = ((x0 + x + w) % w) * mx + (y0 + y) * my;
+      const nextIndex = ((x0 + nextX + w) % w) * mx + (y0 + nextY) * my;
+      const thisVertex = vertices[thisIndex];
+      // if (!thisVertex) {
+      //   console.log('thisIndex:', thisIndex, x, y, x0, y0, dx, dy);
+      // }
+      if (!(nextIndex in thisVertex.edges)) {
+        // Path is blocked. No path.
+        return -1;
+      }
+      const travelCost = thisVertex.edges[nextIndex];
+      totalTravelCost += travelCost;
+      x = nextX;
+      y = nextY;
+    } while (x !== dx && y !== dy);
+    const minD = Math.min(adx, ady);
+    const maxD = Math.max(adx, ady);
+    const chebyshev = maxD - minD + minD * Math.sqrt(2);
+    const cartesian = Math.sqrt(dx * dx + dy * dy);
+    const cuttingTheCornerSpeedup = cartesian / chebyshev;
+    const alpha = cartesian / maxRadiusForKnightMoves;
+    const a2 = Math.sqrt(alpha);
+    const moderatedSpeedup = a2 + (1 - a2) * cuttingTheCornerSpeedup;
+    return totalTravelCost * moderatedSpeedup;
+  }
+
+  function ApproximateStraightLineTravelCostSymmetryHack(x0, y0, dx, dy) {
+    const oneWay = ApproximateStraightLineTravelCost(x0, y0, dx, dy);
+    if (oneWay < 0) {
+      return -1;
+    }
+    const destX = (x0 + dx + w) % w;
+    const destY = y0 + dy;
+    const otherWay = ApproximateStraightLineTravelCost(destX, destY, -dx, -dy);
+    if (otherWay < 0) {
+      return -1;
+    }
+    const diff = Math.abs(oneWay - otherWay);
+    const relativeError = diff / Math.max(oneWay, otherWay);
+    if (relativeError > 0.1) {
+      return -1;
+    }
+    return Math.max(oneWay, otherWay);
+  }
+
   let knightMoveCount = 0;
-  const knightMoves = [
-    [2, 1],
-    [1, 2],
-    [-1, 2],
-    [-2, 1],
-    [-2, -1],
-    [-1, -2],
-    [1, -2],
-    [2, -1],
-  ];
   for (const i in vertices) {
     const v = vertices[i];
-    const degree = Object.keys(v.edges).length;
-    if (degree < 8) {
-      continue;
-    }
-    for (const [dx, dy] of knightMoves) {
-      const x2 = (v.x + dx + w) % w;  // The world wraps around horizontally.
-      const y2 = v.y + dy;  // ...but not vertically over the poles.
-      if (y2 < 0 || y2 >= h) {
-        continue;
-      }
-      const j = x2 * mx + y2 * my;
-      const destination = vertices[j];
-      const t = CalculateTravelTimeBetweenVertices(v, destination);
-      if (t) {
-        v.km[j] = t;
-        knightMoveCount++;
+    const square = Math.ceil(maxRadiusForKnightMoves + 0.1);
+    for (let dx = -square; dx <= square; dx++) {
+      for (let dy = -square; dy <= square; dy++) {
+        const r2 = dx * dx + dy * dy;
+        if (r2 < minR2 || r2 > maxR2) {
+          continue;
+        }
+        const t = ApproximateStraightLineTravelCostSymmetryHack(v.x, v.y, dx, dy);
+        if (t > 0) {
+          const x2 = (v.x + dx + w) % w;  // The world wraps around horizontally.
+          const y2 = v.y + dy;  // ...but not vertically over the poles.
+          const j = x2 * mx + y2 * my;
+          v.km[j] = t;
+          knightMoveCount++;
+        }
       }
     }
   }
   console.log('knightMoveCount:', knightMoveCount);
+  console.log('Checking edges for symmetry.');
+  for (const i in vertices) {
+    const a = vertices[i];
+    for (const j in a.edges) {
+      const b = vertices[j];
+      if (!(i in b.edges)) {
+        console.log('WARNING: assymetric edge detected');
+        continue;
+      }
+      const diff = Math.abs(b.edges[i] - a.edges[j]);
+      if (diff > 0.0000001) {
+        console.log('WARNING: edge travel time differs in 2 directions');
+      }
+    }
+  }
+  console.log('Checking knight moves for symmetry.');
+  let oneWayKmCount = 0;
+  for (const i in vertices) {
+    const a = vertices[i];
+    for (const j in a.km) {
+      const b = vertices[j];
+      if (!(i in b.km)) {
+        //console.log('WARNING: assymetric km detected', a.x, a.y, b.x, b.y);
+        oneWayKmCount++;
+        continue;
+      }
+      // const diff = Math.abs(b.km[i] - a.km[j]);
+      // if (diff > 0.0000001) {
+      //   console.log('WARNING: km travel time differs in 2 directions');
+      // }
+    }
+  }
+  console.log('oneWayKmCount', oneWayKmCount, (100 * oneWayKmCount / knightMoveCount), '%');
   const trials = 999999;
   for (let trial = 0; trial < trials; trial++) {
     console.log('Floodfill trial', trial);
@@ -232,15 +344,14 @@ async function Main() {
     const [centerX3D, centerY3D, centerZ3D] = UnitSphereCoordinates(centerX, centerY);
     for (let k = verticesInCostOrder.length - 1; k >= 0; k--) {
       const v = verticesInCostOrder[k];
-      v.catchment = v.catchment || v.area;
       const [a, b, c] = UnitSphereCoordinates(v.x, v.y);
       const dot = a * centerX3D + b * centerY3D + c * centerZ3D;
       const radiansAwayFromCenter = Math.acos(dot);
-      const greatCircleLength = radiansAwayFromCenter / Math.PI;
+      const greatCircleLength = Math.min(0.5, radiansAwayFromCenter / Math.PI);
       const constituency = greatCircleLength * greatCircleLength;
-      v.traffic = (v.traffic || 0) + (v.catchment * constituency);
-      let minCost = v.drivingTimeFromOrigin;
-      let bestEdge;
+      v.traffic += v.catchment;
+      let minCost = v.drivingTimeFromOrigin + 1;
+      let bestEdge = null;
       for (const j in v.edges) {
         const w = vertices[j];
         const cost = w.drivingTimeFromOrigin;
@@ -249,8 +360,20 @@ async function Main() {
           bestEdge = j;
         }
       }
-      if (bestEdge) {
-        vertices[bestEdge].catchment = (vertices[bestEdge].catchment || vertices[bestEdge].area) + v.catchment;
+      for (const j in v.km) {
+        const w = vertices[j];
+        const cost = w.drivingTimeFromOrigin;
+        if (cost < minCost) {
+          minCost = cost;
+          bestEdge = j;
+        }
+      }
+      if (bestEdge !== null) {
+        vertices[bestEdge].catchment += v.catchment;
+      } else {
+        if (k > 0) {
+          console.log('WARNING: catchment flow is blocked!', minCost);
+        }
       }
     }
     if (((trial % 10) > 0) && (trial > 10)) {
