@@ -57,7 +57,7 @@ function GCD(a, b) {
 
 async function Main() {
   console.log('Loading heighmap');
-  const image = await Image.load('ldem_16_uint.tif');
+  const image = await Image.load('ldem_4_uint.tif');
   const w = image.width;
   const h = image.height;
   const mx = image.multiplierX;
@@ -90,7 +90,7 @@ async function Main() {
                                        b.x3D, b.y3D, b.z3D);
     const elevationChange = Math.abs(a.elevationMeters - b.elevationMeters);
     const slope = elevationChange / drivingDistance;
-    const maxClimbableSlope = 0.05;
+    const maxClimbableSlope = 0.06;
     if (slope >= maxClimbableSlope) {
       return null;
     }
@@ -129,8 +129,9 @@ async function Main() {
       const area = Math.sin(latitudeRadians);
       const edges = {};
       const km = {};
+      const tp = {};
       const traffic = 0;
-      vertices[i] = { area, edges, elevationMeters, km, traffic, x, y, x3D, y3D, z3D };
+      vertices[i] = { area, edges, elevationMeters, km, tp, traffic, x, y, x3D, y3D, z3D };
       minElevation = Math.min(elevationMeters, minElevation);
       maxElevation = Math.max(elevationMeters, maxElevation);
     }
@@ -157,7 +158,7 @@ async function Main() {
   console.log('vertices:', n);
   console.log('edges:', edgeCount);
   console.log('Calculating knight moves');
-  const maxRadiusForKnightMoves = 5.1;
+  const maxRadiusForKnightMoves = 6.1;
   const minRadiusForKnightMoves = 1.9;
   const maxR2 = maxRadiusForKnightMoves * maxRadiusForKnightMoves;
   const minR2 = minRadiusForKnightMoves * minRadiusForKnightMoves;
@@ -165,16 +166,16 @@ async function Main() {
   function ApproximateStraightLineTravelCost(x0, y0, dx, dy) {
     if (!dx || !dy) {
       // Shortcuts have to be diagonal. No driving along the axes.
-      return -1;
+      return [-1, []];
     }
     if (y0 + dy < 0 || y0 + dy >= h) {
       // No shortcuts over top of the poles. Yes shortcuts around the equator.
-      return -1;
+      return [-1, []];
     }
     if (GCD(dx, dy) > 1) {
       // Non-coprime paths are redundant. Let the algorithm discover those on
       // its own.
-      return -1;
+      return [-1, []];
     }
     const adx = Math.abs(dx);
     const ady = Math.abs(dy);
@@ -182,6 +183,7 @@ async function Main() {
     let totalTravelCost = 0;
     let x = 0;
     let y = 0;
+    const trafficPath = [];
     do  {
       let nextX;
       let nextY;
@@ -195,46 +197,53 @@ async function Main() {
       const thisIndex = ((x0 + x + w) % w) * mx + (y0 + y) * my;
       const nextIndex = ((x0 + nextX + w) % w) * mx + (y0 + nextY) * my;
       const thisVertex = vertices[thisIndex];
-      // if (!thisVertex) {
-      //   console.log('thisIndex:', thisIndex, x, y, x0, y0, dx, dy);
-      // }
       if (!(nextIndex in thisVertex.edges)) {
         // Path is blocked. No path.
-        return -1;
+        return [-1, []];
       }
       const travelCost = thisVertex.edges[nextIndex];
       totalTravelCost += travelCost;
       x = nextX;
       y = nextY;
-    } while (x !== dx && y !== dy);
+      trafficPath.push(nextIndex);
+    } while (x !== dx || y !== dy);
+    // Remove final vertex from traffic path since we only want the in-between
+    // vertices that this knight move hops over top of.
+    if (trafficPath.length > 0) {
+      trafficPath.pop();
+    }
     const minD = Math.min(adx, ady);
     const maxD = Math.max(adx, ady);
-    const chebyshev = maxD - minD + minD * Math.sqrt(2);
+    const chebyshev = (maxD - minD) + (minD * Math.sqrt(2));
     const cartesian = Math.sqrt(dx * dx + dy * dy);
     const cuttingTheCornerSpeedup = cartesian / chebyshev;
-    const alpha = cartesian / maxRadiusForKnightMoves;
-    const a2 = Math.sqrt(alpha);
-    const moderatedSpeedup = a2 + (1 - a2) * cuttingTheCornerSpeedup;
-    return totalTravelCost * moderatedSpeedup;
+    const finalCost = totalTravelCost * cuttingTheCornerSpeedup;
+    return [finalCost, trafficPath];
   }
 
   function ApproximateStraightLineTravelCostSymmetryHack(x0, y0, dx, dy) {
-    const oneWay = ApproximateStraightLineTravelCost(x0, y0, dx, dy);
-    if (oneWay < 0) {
-      return -1;
+    const [aCost, aPath] = ApproximateStraightLineTravelCost(x0, y0, dx, dy);
+    if (aCost < 0) {
+      return [-1, []];
     }
     const destX = (x0 + dx + w) % w;
     const destY = y0 + dy;
-    const otherWay = ApproximateStraightLineTravelCost(destX, destY, -dx, -dy);
-    if (otherWay < 0) {
-      return -1;
+    const [bCost, bPath] = ApproximateStraightLineTravelCost(destX, destY, -dx, -dy);
+    if (bCost < 0) {
+      return [-1, []];
     }
-    const diff = Math.abs(oneWay - otherWay);
-    const relativeError = diff / Math.max(oneWay, otherWay);
-    if (relativeError > 0.1) {
-      return -1;
+    // const diff = Math.abs(aCost - bCost);
+    // const relativeError = diff / Math.min(aCost, bCost);
+    // if (relativeError > 0.1) {
+    //   return [-1, []];
+    // }
+    // Return the higher cost as a hedge against asymmetry but still render the
+    // shorter path.
+    if (aCost < bCost) {
+      return [bCost, aPath];
+    } else {
+      return [aCost, bPath];
     }
-    return Math.max(oneWay, otherWay);
   }
 
   let knightMoveCount = 0;
@@ -247,12 +256,13 @@ async function Main() {
         if (r2 < minR2 || r2 > maxR2) {
           continue;
         }
-        const t = ApproximateStraightLineTravelCostSymmetryHack(v.x, v.y, dx, dy);
+        const [t, tp] = ApproximateStraightLineTravelCostSymmetryHack(v.x, v.y, dx, dy);
         if (t > 0) {
           const x2 = (v.x + dx + w) % w;  // The world wraps around horizontally.
           const y2 = v.y + dy;  // ...but not vertically over the poles.
           const j = x2 * mx + y2 * my;
           v.km[j] = t;
+          v.tp[j] = tp;
           knightMoveCount++;
         }
       }
@@ -298,7 +308,7 @@ async function Main() {
     for (const i in vertices) {
       const v = vertices[i];
       v.reachable = false;
-      v.drivingTimeFromOrigin = 0;
+      v.drivingTimeFromOrigin = Infinity;
       v.catchment = v.area;
       v.color = undefined;
     }
@@ -310,10 +320,12 @@ async function Main() {
     const verticesInCostOrder = [];
     let progressCount = 0;
     let nextPercentToReport = 0;
+    let maxCost = 0;
     while (pq.size() > 0) {
       const floodNext = pq.dequeue();
       const i = floodNext.i;
       const minCost = floodNext.f;
+      maxCost = Math.max(maxCost, minCost);
       const v = vertices[i];
       if (v.reachable) {
         continue;
@@ -340,6 +352,11 @@ async function Main() {
         }
       }
     }
+    console.log('Floodfilled', verticesInCostOrder.length, 'vertices.', 'maxCost', maxCost);
+    if (verticesInCostOrder.length < n / 2) {
+      console.log('Floodfilled minority component.');
+      continue;
+    }
     console.log('Floodfill done. Tracing paths.');
     const [centerX3D, centerY3D, centerZ3D] = UnitSphereCoordinates(centerX, centerY);
     for (let k = verticesInCostOrder.length - 1; k >= 0; k--) {
@@ -347,9 +364,12 @@ async function Main() {
       const [a, b, c] = UnitSphereCoordinates(v.x, v.y);
       const dot = a * centerX3D + b * centerY3D + c * centerZ3D;
       const radiansAwayFromCenter = Math.acos(dot);
-      const greatCircleLength = Math.min(0.5, radiansAwayFromCenter / Math.PI);
-      const constituency = greatCircleLength * greatCircleLength;
-      v.traffic += v.catchment;
+      const degreesAwayFromCenter = 180 * radiansAwayFromCenter / Math.PI;
+      // const minFadeDegrees = 20;
+      // const maxFadeDegrees = 40;
+      // const trafficMultiplier = Math.max(0, Math.min(1, (degreesAwayFromCenter - minFadeDegrees) / (maxFadeDegrees - minFadeDegrees)));
+      const trafficMultiplier = 1;
+      v.traffic += v.catchment * trafficMultiplier;
       let minCost = v.drivingTimeFromOrigin + 1;
       let bestEdge = null;
       for (const j in v.edges) {
@@ -360,12 +380,14 @@ async function Main() {
           bestEdge = j;
         }
       }
+      let bestTrafficPath = [];
       for (const j in v.km) {
         const w = vertices[j];
         const cost = w.drivingTimeFromOrigin;
         if (cost < minCost) {
           minCost = cost;
           bestEdge = j;
+          bestTrafficPath = v.tp[j];
         }
       }
       if (bestEdge !== null) {
@@ -374,6 +396,10 @@ async function Main() {
         if (k > 0) {
           console.log('WARNING: catchment flow is blocked!', minCost);
         }
+      }
+      // Give credit to vertices that are hopped over in case of a knight move.
+      for (const j of bestTrafficPath) {
+        vertices[j].traffic += v.catchment * trafficMultiplier;
       }
     }
     if (((trial % 10) > 0) && (trial > 10)) {
@@ -394,9 +420,9 @@ async function Main() {
     const orangePixelCount = Math.floor(n / 100);
     const redPixelCount = Math.floor(orangePixelCount * 2);
     const yellowPixelCount = Math.floor(orangePixelCount / 10);
-    const greenPixelCount = Math.floor(yellowPixelCount / 10);
-    const bluePixelCount = Math.floor(greenPixelCount / 10);
-    const purplePixelCount = Math.floor(bluePixelCount / 10);
+    const greenPixelCount = 0; //Math.floor(yellowPixelCount / 10);
+    const bluePixelCount = 0; //Math.floor(greenPixelCount / 10);
+    const purplePixelCount = 0; //Math.floor(bluePixelCount / 10);
     console.log('Color counts:',
                 purplePixelCount, bluePixelCount, greenPixelCount,
                 yellowPixelCount, orangePixelCount, redPixelCount);
@@ -459,7 +485,7 @@ async function Main() {
         ctx.fillRect(v.x, v.y, 1, 1);
       }
     }
-    const filename = `approximate-${trial}.png`;
+    const filename = `moon-${trial}.png`;
     await OutputCanvasAsPngFile(canvas, filename);
     console.log('Drawing black canvas.');
     ctx.fillStyle = `rgb(0,0,0)`;
@@ -471,7 +497,7 @@ async function Main() {
         ctx.fillRect(v.x, v.y, 1, 1);
       }
     }
-    const filenameBlackImage = `approximate-${trial}-black.png`;
+    const filenameBlackImage = `black-${trial}.png`;
     await OutputCanvasAsPngFile(canvas, filenameBlackImage);
   }
   console.log('Done.');
