@@ -55,9 +55,16 @@ function GCD(a, b) {
   return GCD(b, a % b);
 }
 
+function BlendRgbColors(color1, color2, alpha) {
+  const r = Math.round(color1[0] * (1 - alpha) + color2[0] * alpha);
+  const g = Math.round(color1[1] * (1 - alpha) + color2[1] * alpha);
+  const b = Math.round(color1[2] * (1 - alpha) + color2[2] * alpha);
+  return `rgb(${r},${g},${b})`;
+}
+
 async function Main() {
   console.log('Loading heighmap');
-  const image = await Image.load('ldem_16_uint.tif');
+  const image = await Image.load('ldem_4_uint.tif');
   const w = image.width;
   const h = image.height;
   const mx = image.multiplierX;
@@ -158,8 +165,8 @@ async function Main() {
   console.log('vertices:', n);
   console.log('edges:', edgeCount);
   console.log('Calculating knight moves');
-  const maxRadiusForKnightMoves = 3.5;
-  const minRadiusForKnightMoves = 1.9;
+  const maxRadiusForKnightMoves = 5;
+  const minRadiusForKnightMoves = 2;
   const maxR2 = maxRadiusForKnightMoves * maxRadiusForKnightMoves;
   const minR2 = minRadiusForKnightMoves * minRadiusForKnightMoves;
 
@@ -417,25 +424,32 @@ async function Main() {
       return 0;
     });
     console.log('Marking top vertices with color.');
-    const greenPixelCount = Math.floor(n * 0.02);
+    const greenPixelCount = Math.floor(n * 0.03);
     const yellowPixelCount = Math.floor(greenPixelCount / 2);
     const orangePixelCount = Math.floor(yellowPixelCount / 10);;
     const redPixelCount = Math.floor(orangePixelCount / 10);
+    const redRGB = [255, 0, 0];
+    const orangeRGB = [255, 165, 0];
+    const yellowRGB = [255, 255, 0];
+    const greenRGB = [148, 245, 44];
     for (let k = 0; k < redPixelCount && k < verticesInCostOrder.length; k++) {
       const v = verticesInCostOrder[k];
       v.color = 'rgb(255, 0, 0)';  // Red
     }
     for (let k = redPixelCount; k < orangePixelCount && k < verticesInCostOrder.length; k++) {
       const v = verticesInCostOrder[k];
-      v.color = 'rgb(255, 128, 0)';  // Orange
+      const alpha = (k - redPixelCount) / (orangePixelCount - redPixelCount);
+      v.color = BlendRgbColors(redRGB, orangeRGB, alpha);
     }
     for (let k = orangePixelCount; k < yellowPixelCount && k < verticesInCostOrder.length; k++) {
       const v = verticesInCostOrder[k];
-      v.color = 'rgb(255, 255, 0)';  // Yellow
+      const alpha = (k - orangePixelCount) / (yellowPixelCount - orangePixelCount);
+      v.color = BlendRgbColors(orangeRGB, yellowRGB, alpha);
     }
     for (let k = yellowPixelCount; k < greenPixelCount && k < verticesInCostOrder.length; k++) {
       const v = verticesInCostOrder[k];
-      v.color = 'rgb(148, 245, 44)';  // Green
+      const alpha = (k - yellowPixelCount) / (greenPixelCount - yellowPixelCount);
+      v.color = BlendRgbColors(yellowRGB, greenRGB, alpha);
     }
     console.log('Color gradient for minor roads.');
     let maxTrafficForGradient = 1;
