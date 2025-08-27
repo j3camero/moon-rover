@@ -2,6 +2,7 @@ const { createCanvas } = require('canvas');
 const fs = require('fs')
 const { Image } = require('image-js');
 const { PriorityQueue } = require('@datastructures-js/priority-queue');
+const readline = require('readline');
 
 // Radius of the moon.
 const moonRadius = 1727400;
@@ -60,6 +61,41 @@ function BlendRgbColors(color1, color2, alpha) {
   const g = Math.round(color1[1] * (1 - alpha) + color2[1] * alpha);
   const b = Math.round(color1[2] * (1 - alpha) + color2[2] * alpha);
   return `rgb(${r},${g},${b})`;
+}
+
+function WriteTrafficToFile(vertices, n) {
+  console.log('Writing traffic to file.');
+  const stream = fs.createWriteStream('traffic.csv', { flags: 'w' });
+  for (let i = 0; i < n; i++) {
+    const traffic = vertices[i].traffic || 0;
+    stream.write(`${traffic}\n`);
+  }
+  stream.end();
+  console.log('Successfully wrote traffic to file.');
+}
+
+async function ReadTrafficFromFile(vertices) {
+  if (!fs.existsSync('traffic.csv')) {
+    console.log('No saved traffic file found. Starting fresh.');
+    return;
+  }
+  console.log('Reading traffic from file.');
+  const stream = fs.createReadStream('traffic.csv');
+  const rl = readline.createInterface({
+    input: stream,
+    crlfDelay: Infinity,
+  });
+  let lineCount = 0;
+  for await (const line of rl) {
+    try {
+      const traffic = parseFloat(line.trim());
+      vertices[lineCount].traffic = traffic;
+    } catch (error) {
+      console.log('Parse error:', line);
+    }
+    lineCount++;
+  }
+  console.log('Successfully read traffic from file. lineCount:', lineCount);
 }
 
 async function Main() {
@@ -165,7 +201,7 @@ async function Main() {
   console.log('vertices:', n);
   console.log('edges:', edgeCount);
   console.log('Calculating knight moves');
-  const maxRadiusForKnightMoves = 5;
+  const maxRadiusForKnightMoves = 12;
   const minRadiusForKnightMoves = 2;
   const maxR2 = maxRadiusForKnightMoves * maxRadiusForKnightMoves;
   const minR2 = minRadiusForKnightMoves * minRadiusForKnightMoves;
@@ -309,6 +345,7 @@ async function Main() {
     }
   }
   console.log('oneWayKmCount', oneWayKmCount, (100 * oneWayKmCount / knightMoveCount), '%');
+  await ReadTrafficFromFile(vertices);
   const trials = 999999;
   for (let trial = 0; trial < trials; trial++) {
     console.log('Floodfill trial', trial);
@@ -426,7 +463,7 @@ async function Main() {
     console.log('Marking top vertices with color.');
     const greenPixelCount = Math.floor(n * 0.03);
     const yellowPixelCount = Math.floor(greenPixelCount / 2);
-    const orangePixelCount = Math.floor(yellowPixelCount / 10);;
+    const orangePixelCount = Math.floor(yellowPixelCount / 10);
     const redPixelCount = Math.floor(orangePixelCount / 10);
     const redRGB = [255, 0, 0];
     const orangeRGB = [255, 165, 0];
@@ -500,6 +537,7 @@ async function Main() {
     }
     const filenameBlackImage = `black-${trial}.png`;
     await OutputCanvasAsPngFile(canvas, filenameBlackImage);
+    WriteTrafficToFile(vertices, n);
   }
   console.log('Done.');
 }
