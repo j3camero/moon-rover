@@ -151,6 +151,35 @@ async function Main() {
     return [x, y];
   }
 
+  const chosenPixels = [];
+
+  function ChooseBlueNoisePixel() {
+    console.log('Choosing random pixel with blue noise.');
+    let mostIsolatedPoint = null;
+    let maxMinAngle = 0;
+    for (let i = 0; i < 100; i++) {
+      const [ax, ay] = ChooseRandomPixel();
+      const [bx, by, bz] = UnitSphereCoordinates(ax, ay);
+      let minAngle = 361;
+      for (const [cx, cy] of chosenPixels) {
+        const [dx, dy, dz] = UnitSphereCoordinates(cx, cy);
+        const dot = bx * dx + by * dy + bz * dz;
+        const angleRadians = Math.acos(dot);
+        const angleDegrees = 180 * angleRadians / Math.PI;
+        if (angleDegrees < minAngle) {
+          minAngle = angleDegrees;
+        }
+      }
+      if (minAngle > maxMinAngle) {
+        maxMinAngle = minAngle;
+        mostIsolatedPoint = [ax, ay];
+      }
+    }
+    chosenPixels.push(mostIsolatedPoint);
+    console.log('Chose random pixel', mostIsolatedPoint, 'located', maxMinAngle.toFixed(2), 'degrees away from nearest seed point.');
+    return mostIsolatedPoint;
+  }
+
   // Create the navmesh. Each pixel is a vertex. Adjacent pixels are connected
   // by an edge containing the travel time.
   console.log('Initializing navmesh');
@@ -356,7 +385,7 @@ async function Main() {
       v.catchment = v.area;
       v.color = undefined;
     }
-    const [centerX, centerY] = ChooseRandomPixel();
+    const [centerX, centerY] = ChooseBlueNoisePixel();
     console.log('center', centerX, centerY);
     const centerIndex = centerX * mx + centerY * my;
     const pq = new PriorityQueue((a, b) => (a.f - b.f));
@@ -409,10 +438,14 @@ async function Main() {
       const dot = a * centerX3D + b * centerY3D + c * centerZ3D;
       const radiansAwayFromCenter = Math.acos(dot);
       const degreesAwayFromCenter = 180 * radiansAwayFromCenter / Math.PI;
-      // const minFadeDegrees = 0;
-      // const maxFadeDegrees = 30;
-      // const trafficMultiplier = Math.max(0, Math.min(1, (degreesAwayFromCenter - minFadeDegrees) / (maxFadeDegrees - minFadeDegrees)));
-      const trafficMultiplier = 1;  //degreesAwayFromCenter > 5 ? 1 : 0;
+      // const minFadeDegrees = 30;
+      // const maxFadeDegrees = 90;
+      //const trafficMultiplier = Math.max(0, Math.min(1, (degreesAwayFromCenter - minFadeDegrees) / (maxFadeDegrees - minFadeDegrees)));
+      //const trafficMultiplier = degreesAwayFromCenter > 60 ? 1 : 0;
+      let trafficMultiplier = 1;
+      if (degreesAwayFromCenter < 60) {
+        trafficMultiplier = degreesAwayFromCenter / 60;
+      }
       v.traffic += v.catchment * trafficMultiplier;
       let minCost = v.drivingTimeFromOrigin + 1;
       let bestEdge = null;
@@ -450,6 +483,7 @@ async function Main() {
       console.log('Skipping render stage.');
       continue;
     }
+
     console.log('Sorting vertices.');
     verticesInCostOrder.sort((a, b) => {
       if (a.traffic < b.traffic) {
@@ -462,6 +496,9 @@ async function Main() {
     });
     console.log('Marking top vertices with color.');
     const greenPixelCount = Math.floor(n * 0.03);
+    if (verticesInCostOrder.length < greenPixelCount) {
+      continue;
+    }
     const yellowPixelCount = Math.floor(greenPixelCount / 2);
     const orangePixelCount = Math.floor(yellowPixelCount / 10);
     const redPixelCount = Math.floor(orangePixelCount / 10);
@@ -489,24 +526,19 @@ async function Main() {
       v.color = BlendRgbColors(yellowRGB, greenRGB, alpha);
     }
     console.log('Color gradient for minor roads.');
-    let maxTrafficForGradient = 1;
-    if (verticesInCostOrder.length >= greenPixelCount) {
-      maxTrafficForGradient = verticesInCostOrder[greenPixelCount].traffic;
-    }
+    const maxTrafficForGradient = verticesInCostOrder[greenPixelCount].traffic;
     for (const i in vertices) {
       const v = vertices[i];
       const t = v.traffic;
       if (!t) {
         continue;
       }
-      if (t < 1) {
-        continue;
-      }
       if (v.color) {
         continue;
       }
-      const alpha = Math.min(1, t / maxTrafficForGradient);
-      v.color = `rgba(148, 245, 44, ${alpha})`;
+      const alpha = t / maxTrafficForGradient;
+      const formattedAlpha = alpha.toFixed(3);
+      v.color = `rgba(148, 245, 44, ${formattedAlpha})`;
     }
     console.log('Drawing canvas.');
     const canvas = createCanvas(w, h);
