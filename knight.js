@@ -157,7 +157,7 @@ async function Main() {
     console.log('Choosing random pixel with blue noise.');
     let mostIsolatedPoint = null;
     let maxMinAngle = 0;
-    for (let i = 0; i < 100; i++) {
+    for (let i = 0; i < 1000; i++) {
       const [ax, ay] = ChooseRandomPixel();
       const [bx, by, bz] = UnitSphereCoordinates(ax, ay);
       let minAngle = 361;
@@ -390,6 +390,7 @@ async function Main() {
     const centerIndex = centerX * mx + centerY * my;
     const pq = new PriorityQueue((a, b) => (a.f - b.f));
     pq.enqueue({ i: centerIndex, f: 0 });
+    const lowestFScoreForQueuedVertices = {};
     const verticesInCostOrder = [];
     let progressCount = 0;
     let nextPercentToReport = 0;
@@ -405,6 +406,7 @@ async function Main() {
       }
       v.reachable = true;
       v.drivingTimeFromOrigin = minCost;
+      delete lowestFScoreForQueuedVertices[i];
       progressCount++;
       const progressPercent = 100 * progressCount / n;
       if (progressPercent > nextPercentToReport) {
@@ -415,13 +417,21 @@ async function Main() {
       for (const j in v.edges) {
         if (!vertices[j].reachable) {
           const newCost = v.drivingTimeFromOrigin + v.edges[j];
-          pq.enqueue({ i: j, f: newCost });
+          const minScoreAlreadyInQueue = lowestFScoreForQueuedVertices[j] || -1;
+          if (newCost < minScoreAlreadyInQueue || minScoreAlreadyInQueue < 0) {
+            pq.enqueue({ i: j, f: newCost });
+            lowestFScoreForQueuedVertices[j] = newCost;
+          }
         }
       }
       for (const j in v.km) {
         if (!vertices[j].reachable) {
           const newCost = v.drivingTimeFromOrigin + v.km[j];
-          pq.enqueue({ i: j, f: newCost });
+          const minScoreAlreadyInQueue = lowestFScoreForQueuedVertices[j] || -1;
+          if (newCost < minScoreAlreadyInQueue || minScoreAlreadyInQueue < 0) {
+            pq.enqueue({ i: j, f: newCost });
+            lowestFScoreForQueuedVertices[j] = newCost;
+          }
         }
       }
     }
