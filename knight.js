@@ -304,13 +304,6 @@ async function Main() {
     if (bCost < 0) {
       return [-1, []];
     }
-    // const diff = Math.abs(aCost - bCost);
-    // const relativeError = diff / Math.min(aCost, bCost);
-    // if (relativeError > 0.1) {
-    //   return [-1, []];
-    // }
-    // Return the higher cost as a hedge against asymmetry but still render the
-    // shorter path.
     if (aCost < bCost) {
       return [aCost, aPath];
     } else {
@@ -321,6 +314,9 @@ async function Main() {
   let knightMoveCount = 0;
   for (const i in vertices) {
     const v = vertices[i];
+    if (!v.km) {
+      continue;
+    }
     const square = Math.ceil(maxRadiusForKnightMoves + 0.1);
     for (let dx = -square; dx <= square; dx++) {
       for (let dy = -square; dy <= square; dy++) {
@@ -363,14 +359,9 @@ async function Main() {
     for (const j in a.km) {
       const b = vertices[j];
       if (!(i in b.km)) {
-        //console.log('WARNING: assymetric km detected', a.x, a.y, b.x, b.y);
         oneWayKmCount++;
         continue;
       }
-      // const diff = Math.abs(b.km[i] - a.km[j]);
-      // if (diff > 0.0000001) {
-      //   console.log('WARNING: km travel time differs in 2 directions');
-      // }
     }
   }
   console.log('oneWayKmCount', oneWayKmCount, (100 * oneWayKmCount / knightMoveCount), '%');
@@ -489,7 +480,7 @@ async function Main() {
         vertices[j].traffic += v.catchment * trafficMultiplier;
       }
     }
-    if (((trial % 10) > 0) && (trial > 10)) {
+    if (((trial % 100) > 0) && (trial > 5)) {
       console.log('Skipping render stage.');
       continue;
     }
