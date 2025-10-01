@@ -167,12 +167,9 @@ async function Main() {
   for (let x = 0; x < w; x++) {
     for (let y = 0; y < h; y++) {
       const i = y * w + x;
-      const latP = 1 - (y + 0.5) / h;
-      const latitudeRadians = Math.PI * latP;  // Range (0, pi)
-      const area = Math.sin(latitudeRadians);
       const edges = {};
       const traffic = 0;
-      vertices[i] = { area, edges, traffic, x, y };
+      vertices[i] = { edges, traffic, x, y };
       const elevationMeters = GetElevationOfPixel(x, y);
       minElevation = Math.min(elevationMeters, minElevation);
       maxElevation = Math.max(elevationMeters, maxElevation);
@@ -221,7 +218,10 @@ async function Main() {
       const v = vertices[i];
       v.reachable = false;
       v.drivingTimeFromOrigin = Infinity;
-      v.catchment = v.area;
+      const latP = 1 - (v.y + 0.5) / h;
+      const latitudeRadians = Math.PI * latP;  // Range (0, pi)
+      const area = Math.sin(latitudeRadians);
+      v.catchment = area;
       v.color = undefined;
     }
     const [centerX, centerY] = ChooseBlueNoisePixel();
