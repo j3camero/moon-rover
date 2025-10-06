@@ -1,5 +1,5 @@
 const { createCanvas } = require('canvas');
-const fs = require('fs')
+const fs = require('fs');
 const { Image } = require('image-js');
 const { PriorityQueue } = require('@datastructures-js/priority-queue');
 const readline = require('readline');
@@ -333,9 +333,10 @@ async function FloodfillStartingFromRandomPixel(trialNumber) {
     const area = Math.sin(latitudeRadians);
     const cat = (catchment[i] || 0) + area;
     delete catchment[i];
-    traffic[i] = (traffic[i] || 0) + cat * trafficMultiplier;
+    traffic[i] = (traffic[i] || 0) + 0.5 * cat * trafficMultiplier;
     const p = closedSet[i];
     if (p !== null) {
+      traffic[p] = (traffic[p] || 0) + 0.5 * cat * trafficMultiplier;
       catchment[p] = (catchment[p] || 0) + cat;
     }
   }
@@ -360,7 +361,7 @@ async function FloodfillStartingFromRandomPixel(trialNumber) {
     maxTraffic = Math.max(t, maxTraffic);
   }
   const maxLogTraffic = Math.log(maxTraffic);
-  const minLogTraffic = maxLogTraffic / 2;
+  const minLogTraffic = 0.6 * maxLogTraffic;
   console.log('Drawing canvas.');
   const canvas = createCanvas(W, H);
   const ctx = canvas.getContext('2d');
