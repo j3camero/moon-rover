@@ -461,6 +461,7 @@ async function FloodfillStartingFromRandomPixel(trialNumber) {
     const i = floodNext.i;
     const f = floodNext.f;
     const p = floodNext.p;
+    const fp = floodNext.fp;
     if (i in closedSet) {
       continue;
     }
@@ -481,17 +482,25 @@ async function FloodfillStartingFromRandomPixel(trialNumber) {
         //console.log('Already in closed set.');
         continue;
       }
-      const dt = CalculateGreatCircleTravelTimeBetweenPixelsByIndex(i, j);
-      //console.log('dt =', dt);
-      if (dt === null) {
-        //console.log('dt null');
-        continue;
+      // Process the shortcut before the direct route because it is usually
+      // faster.
+      const ds = CalculateGreatCircleTravelTimeBetweenPixelsByIndex(p, j);
+      if (ds !== null) {
+        const newCost = fp + ds;
+        const lowestCostSoFar = openSet[j] || Infinity;
+        if (newCost < lowestCostSoFar) {
+          pq.enqueue({ i: j, f: newCost, p: p, fp: fp });
+          openSet[j] = newCost;
+        }
       }
-      const newCost = f + dt;
-      const lowestCostSoFar = openSet[j] || Infinity;
-      if (newCost < lowestCostSoFar) {
-        pq.enqueue({ i: j, f: newCost, p: i });
-        openSet[j] = newCost;
+      const dt = CalculateGreatCircleTravelTimeBetweenPixelsByIndex(i, j);
+      if (dt !== null) {
+        const newCost = f + dt;
+        const lowestCostSoFar = openSet[j] || Infinity;
+        if (newCost < lowestCostSoFar) {
+          pq.enqueue({ i: j, f: newCost, p: i, fp: f });
+          openSet[j] = newCost;
+        }
       }
     }
   }
@@ -526,7 +535,7 @@ async function FloodfillStartingFromRandomPixel(trialNumber) {
       catchment[p] = (catchment[p] || 0) + cat;
     }
   }
-  if (((trialNumber % 100) > 0) && (trialNumber > 5)) {
+  if (((trialNumber % 10) > 0) && (trialNumber > 5)) {
     console.log('Skipping render stage.');
     return;
   }
