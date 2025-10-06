@@ -115,12 +115,17 @@ function AnalyzeHeightmap() {
 // patches. The reason for making a continuous surface is to permit The
 // rover to move diagonally across the surface.
 function GetElevationInterpolated(x, y) {
-  if (y < 0) {
+  if (y <= -1) {
     throw 'y is negative';
   }
-  if (y > H - 1) {
+  if (y >= H) {
     throw 'y is too large';
   }
+  // Move the point inside the bounds if it's outside by less than a pixel.
+  // These tiny excursions outside the grid happen because great circles are
+  // curved when projected onto the heightmap.
+  y = Math.max(y, 0);
+  y = Math.min(y, H - 1);
   if (x < 0) {
     throw 'x is negative';
   }
@@ -165,6 +170,38 @@ function UnitSphereCoordinates(x, y) {
   return [x3D, y3D, z3D];
 }
 
+// The inputs have to be a unit vector.
+// Returns fractional pixel coordinates. Might not be whole numbers.
+function UnitSphere3DCoordinatesToFractional2DPixelCoordinates(x, y, z) {
+  const latitudeRadians = Math.acos(z);
+  const dxy = Math.sqrt(x * x + y * y);
+  if (dxy < 0.0000000001) {
+    if (z > 0) {
+      // North pole.
+      return [0, 0];
+    } else {
+      // South pole.
+      return [0, H - 1];
+    }
+  }
+  const longitudeRadians = Math.sign(y) * Math.acos(x / dxy);
+  let longP = longitudeRadians / (2 * Math.PI);
+  // Center heightmap image on (0,0).
+  longP += 0.5;
+  if (longP > 1) {
+    longP -= 1;
+  }
+  const i = longP * W;
+  const latP = latitudeRadians / Math.PI;
+  const j = (1 - latP) * H - 0.5;
+  return [i, j];  // Fractional pixel coordinates. Might not be integers.
+}
+
+function Normalize3D(x, y, z) {
+  const d = Math.sqrt(x * x + y * y + z * z);
+  return [x / d, y / d, z / d];
+}
+
 function Deindex(i) {
   const x = i % W;
   const y = Math.floor(i / W);
@@ -173,6 +210,23 @@ function Deindex(i) {
 
 function PixelIndex(x, y) {
   return W * y + x;
+}
+
+// The distance is the hypotenuse of a right angled triangle.
+// This function assumes that the actual driving distance is close to the
+// distance as the crow flies. Technically we should distinguish between the
+// two but the results for wide flat sections of terrain are so similar that
+// it's not worth the extra trigonometry calculations.
+function CalculateTravelTimeGivenDistanceAndSlope(distance, slope) {
+  const maxClimbableSlope = 0.06;
+  if (slope >= maxClimbableSlope) {
+    return null;
+  }
+  const topSpeedOnLevelGroundMetersPerSecond = 10;
+  const slowdown = slope / maxClimbableSlope;
+  const speed = topSpeedOnLevelGroundMetersPerSecond * (1 - slowdown);
+  const drivingTime = distance / speed;
+  return drivingTime;
 }
 
 function CalculateTravelTimeBetweenAdjacentPixels(i, j) {
@@ -188,15 +242,147 @@ function CalculateTravelTimeBetweenAdjacentPixels(i, j) {
                                      bx * br, by * br, bz * br);
   const elevationChange = Math.abs(aElevationMeters - bElevationMeters);
   const slope = elevationChange / drivingDistance;
-  const maxClimbableSlope = 0.06;
-  if (slope >= maxClimbableSlope) {
+  return CalculateTravelTimeGivenDistanceAndSlope(drivingDistance, slope);
+}
+
+function CalculateDirectTravelTimeBetweenFractionalPixelCoordinates(
+  x1, y1, x2, y2) {
+  const [ax, ay, az] = UnitSphereCoordinates(x1, y1);
+  const [bx, by, bz] = UnitSphereCoordinates(x2, y2);
+  const aElevationMeters = GetElevationInterpolated(x1, y1);
+  const bElevationMeters = GetElevationInterpolated(x2, y2);
+  const ar = moonRadius + aElevationMeters;
+  const br = moonRadius + bElevationMeters;
+  const drivingDistance = Distance3D(ax * ar, ay * ar, az * ar,
+                                     bx * br, by * br, bz * br);
+  const elevationChange = Math.abs(aElevationMeters - bElevationMeters);
+  const slope = elevationChange / drivingDistance;
+  return CalculateTravelTimeGivenDistanceAndSlope(drivingDistance, slope);
+}
+
+function CalculateGreatCircleTravelTimeBetweenFractionalPixelCoordinates(
+  x1, y1, x2, y2) {
+  //console.log('GreatCircle', x1, y1, x2, y2);
+  const dx = x2 - x1;
+  const adx = Math.abs(dx);
+  const wdx = Math.min(adx, W - adx);
+  const dxLimit = Math.floor(W / 2) - 1;
+  if (wdx >= dxLimit) {
+    // No great circles allowed over the exact north pole or south pole.
     return null;
   }
-  const topSpeedOnLevelGroundMetersPerSecond = 10;
-  const slowdown = slope / maxClimbableSlope;
-  const speed = topSpeedOnLevelGroundMetersPerSecond * (1 - slowdown);
-  const drivingTime = drivingDistance / speed;
-  return drivingTime;
+  if (wdx < 1) {
+    const dy = y2 - y1;
+    const ady = Math.abs(dy);
+    if (ady < 1) {
+      const dsq = (wdx * wdx) + (ady * ady);
+      if (dsq < 1) {
+        // Base case. When (x1,y1) and (x2,y2) are in adjacent pixels stop
+        // recursing. Calculate the distance as a short straight line.
+        return CalculateDirectTravelTimeBetweenFractionalPixelCoordinates(
+          x1, y1, x2, y2);
+      }
+    }
+  }
+  // Recrusive case. If we get here then (x1,y1) and (x2,y2) are in pixels that
+  // are not adjacent. Calculate the midpoint on a sphere to divide-and-conquer
+  // the calculation recusively. This ends up dividing a long great circle
+  // between pixels that are far from each other by cutting it into short,
+  // approximately pixel-length segments then adding them all up.
+  const [ax, ay, az] = UnitSphereCoordinates(x1, y1);
+  const [bx, by, bz] = UnitSphereCoordinates(x2, y2);
+  const mx = 0.5 * (ax + bx);
+  const my = 0.5 * (ay + by);
+  const mz = 0.5 * (az + bz);
+  const [px, py, pz] = Normalize3D(mx, my, mz);
+  const [x3, y3] = UnitSphere3DCoordinatesToFractional2DPixelCoordinates(
+    px, py, pz);
+  const left = CalculateGreatCircleTravelTimeBetweenFractionalPixelCoordinates(
+    x1, y1, x3, y3);
+  if (left === null) {
+    return null;
+  }
+  const right = CalculateGreatCircleTravelTimeBetweenFractionalPixelCoordinates(
+    x3, y3, x2, y2);
+  if (right === null) {
+    return null;
+  }
+  return left + right;
+}
+
+function CalculateGreatCirclePixelPath(x1, y1, x2, y2) {
+  const path = {};
+  const dx = x2 - x1;
+  const adx = Math.abs(dx);
+  const wdx = Math.min(adx, W - adx);
+  const dxLimit = Math.floor(W / 2) - 1;
+  if (wdx >= dxLimit) {
+    // No great circles allowed over the exact north pole or south pole.
+    return {};
+  }
+  if (wdx < 1) {
+    const dy = y2 - y1;
+    const ady = Math.abs(dy);
+    if (ady < 1) {
+      const dsq = (wdx * wdx) + (ady * ady);
+      if (dsq < 1) {
+        // Base case. When (x1,y1) and (x2,y2) are in adjacent pixels stop
+        // recursing.
+        const i = PixelIndex(Math.floor(x1), Math.floor(y1));
+        const j = PixelIndex(Math.floor(x2), Math.floor(y2));
+        // TODO: upgrade this approximation to the line-intersection method.
+        path[i] = 0.5;
+        path[j] = 0.5;
+        return path;
+      }
+    }
+  }
+  // Recrusive case. If we get here then (x1,y1) and (x2,y2) are in pixels that
+  // are not adjacent. Calculate the midpoint on a sphere to divide-and-conquer
+  // the calculation recusively. This ends up dividing a long great circle
+  // between pixels that are far from each other by cutting it into short,
+  // approximately pixel-length segments then adding them all up.
+  const [ax, ay, az] = UnitSphereCoordinates(x1, y1);
+  const [bx, by, bz] = UnitSphereCoordinates(x2, y2);
+  const mx = 0.5 * (ax + bx);
+  const my = 0.5 * (ay + by);
+  const mz = 0.5 * (az + bz);
+  const [px, py, pz] = Normalize3D(mx, my, mz);
+  const [x3, y3] = UnitSphere3DCoordinatesToFractional2DPixelCoordinates(
+    px, py, pz);
+  const left = CalculateGreatCirclePixelPath(x1, y1, x3, y3);
+  const right = CalculateGreatCirclePixelPath(x3, y3, x2, y2);
+  for (const k in left) {
+    path[k] = left[k];
+  }
+  for (const k in right) {
+    path[k] = right[k] + (left[k] || 0);
+  }
+  return path;
+}
+
+function CalculateGreatCircleTravelTimeBetweenPixelsByIndex(i, j) {
+  const [x1, y1] = Deindex(i);
+  const [x2, y2] = Deindex(j);
+  return CalculateGreatCircleTravelTimeBetweenFractionalPixelCoordinates(
+    x1, y1, x2, y2);
+}
+
+function CalculateGreatCirclePixelPathByIndex(i, j) {
+  const [x1, y1] = Deindex(i);
+  const [x2, y2] = Deindex(j);
+  return CalculateGreatCirclePixelPath(x1, y1, x2, y2);
+}
+
+function RecordTrafficInGreatCircle(i, j, volume) {
+  if (i === null || j === null || i === undefined || j === undefined) {
+    return;
+  }
+  const path = CalculateGreatCirclePixelPathByIndex(i, j);
+  for (const k in path) {
+    //console.log('traffic[', k, '] += ', path[k] * volume);
+    traffic[k] = (traffic[k] || 0) + path[k] * volume;
+  }
 }
 
 // Choose a random pixel with a uniform distribution over the sphere.
@@ -295,7 +481,7 @@ async function FloodfillStartingFromRandomPixel(trialNumber) {
         //console.log('Already in closed set.');
         continue;
       }
-      const dt = CalculateTravelTimeBetweenAdjacentPixels(i, j);
+      const dt = CalculateGreatCircleTravelTimeBetweenPixelsByIndex(i, j);
       //console.log('dt =', dt);
       if (dt === null) {
         //console.log('dt null');
@@ -333,10 +519,10 @@ async function FloodfillStartingFromRandomPixel(trialNumber) {
     const area = Math.sin(latitudeRadians);
     const cat = (catchment[i] || 0) + area;
     delete catchment[i];
-    traffic[i] = (traffic[i] || 0) + 0.5 * cat * trafficMultiplier;
+    const trafficVolumeToDraw = cat * trafficMultiplier
     const p = closedSet[i];
     if (p !== null) {
-      traffic[p] = (traffic[p] || 0) + 0.5 * cat * trafficMultiplier;
+      RecordTrafficInGreatCircle(i, p, trafficVolumeToDraw);
       catchment[p] = (catchment[p] || 0) + cat;
     }
   }
@@ -344,7 +530,7 @@ async function FloodfillStartingFromRandomPixel(trialNumber) {
     console.log('Skipping render stage.');
     return;
   }
-  console.log('Sorting vertices.');
+  console.log('Sorting vertices.', Object.keys(traffic).length);
   verticesInCostOrder.sort((i, j) => {
     if (traffic[i] < traffic[j]) {
       return 1;
