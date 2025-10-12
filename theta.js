@@ -58,7 +58,7 @@ async function OutputCanvasAsPngFile(canvas, filename) {
     const timeoutId = setTimeout(() => {
       console.log('Timed out while writing PNG file.');
       reject();
-    }, 15000);
+    }, 60 * 60 * 1000);
     out.on('finish', () => {
       console.log('Wrote', filename);
       out.close();
@@ -75,9 +75,16 @@ function BlendRgbColors(color1, color2, alpha) {
   return `rgb(${r},${g},${b})`;
 }
 
+function BlendRgbColorsWithAlpha(color1, color2, colorFade, alpha) {
+  const r = Math.round(color1[0] * (1 - colorFade) + color2[0] * colorFade);
+  const g = Math.round(color1[1] * (1 - colorFade) + color2[1] * colorFade);
+  const b = Math.round(color1[2] * (1 - colorFade) + color2[2] * colorFade);
+  return `rgba(${r},${g},${b},${alpha})`;
+}
+
 async function LoadHeightmapFromTifImage() {
   console.log('Loading heighmap');
-  heightmapImage = await Image.load('ldem_4_uint.tif');
+  heightmapImage = await Image.load('ldem_16_uint.tif');
   W = heightmapImage.width;
   H = heightmapImage.height;
   N = W * H;
@@ -328,11 +335,42 @@ function CalculateGreatCirclePixelPath(x1, y1, x2, y2) {
       if (dsq < 1) {
         // Base case. When (x1,y1) and (x2,y2) are in adjacent pixels stop
         // recursing.
-        const i = PixelIndex(Math.floor(x1), Math.floor(y1));
-        const j = PixelIndex(Math.floor(x2), Math.floor(y2));
-        // TODO: upgrade this approximation to the line-intersection method.
-        path[i] = 0.5;
-        path[j] = 0.5;
+        const ix = Math.floor(x1);
+        const iy = Math.floor(y1);
+        const i = PixelIndex(ix, iy);
+        const jx = Math.floor(x2);
+        const jy = Math.floor(y2);
+        const j = PixelIndex(jx, jy);
+        const d = Math.sqrt(dsq);
+        if (i === j) {
+          // Same pixel. No intersections.
+          path[i] = d;
+        } else if (ix === jx) {
+          // Vertical. Credit 2 pixels.
+          const interY = Math.floor(Math.max(y1, y2));
+          const ip = (interY - y1) / (y2 - y1);
+          const jp = 1 - ip;
+          path[i] = d * ip;
+          path[j] = d * jp;
+        } else if (iy === jy) {
+          // Horizontal. Credit 2 pixels.
+          const interX = Math.floor(Math.max(x1, x2));
+          const ip = (interX - x1) / (x2 - x1);
+          const jp = 1 - ip;
+          path[i] = d * ip;
+          path[j] = d * jp;
+        } else {
+          // Diagonal. Credit 3 pixels with 2 intersesctions between them.
+          const kx = Math.floor(Math.max(x1, x2));
+          const ky = Math.floor(Math.max(y1, y2));
+          const k = PixelIndex(kx, ky);
+          const ip = Math.min((kx - x1) / (x2 - x1), (ky - y1) / (y2 - y1));
+          const jp = Math.min((kx - x2) / (x1 - x2), (ky - y2) / (y1 - y2));
+          const kp = 1 - ip - jp;
+          path[i] = d * ip;
+          path[j] = d * jp;
+          path[k] = d * kp;
+        }
         return path;
       }
     }
@@ -442,6 +480,43 @@ function GetAdjacentPixels(i) {
   return adjacent;
 }
 
+async function WriteTrafficToFile() {
+  console.log('Writing traffic to file.');
+  const stream = fs.createWriteStream('traffic.csv', { flags: 'w' });
+  for (let i = 0; i < N; i++) {
+    const t = traffic[i] || 0;
+    await stream.write(`${t}\n`);
+  }
+  await stream.end();
+  console.log('Successfully wrote traffic to file.');
+}
+
+async function ReadTrafficFromFile() {
+  if (!fs.existsSync('traffic.csv')) {
+    console.log('No saved traffic file found. Starting fresh.');
+    return;
+  }
+  console.log('Reading traffic from file.');
+  const stream = fs.createReadStream('traffic.csv');
+  const rl = readline.createInterface({
+    input: stream,
+    crlfDelay: Infinity,
+  });
+  let lineCount = 0;
+  for await (const line of rl) {
+    try {
+      const t = parseFloat(line.trim());
+      if (t > 0) {
+        traffic[lineCount] = t;
+      }
+    } catch (error) {
+      console.log('Parse error:', line);
+    }
+    lineCount++;
+  }
+  console.log('Successfully read traffic from file. lineCount:', lineCount);
+}
+
 async function FloodfillStartingFromRandomPixel(trialNumber) {
   console.log('Trial', trialNumber);
   const [centerX, centerY] = ChooseBlueNoisePixel();
@@ -520,62 +595,105 @@ async function FloodfillStartingFromRandomPixel(trialNumber) {
     const radiansAwayFromCenter = Math.acos(dot);
     const degreesAwayFromCenter = 180 * radiansAwayFromCenter / Math.PI;
     let trafficMultiplier = 1;
-    if (degreesAwayFromCenter < 60) {
-      trafficMultiplier = degreesAwayFromCenter / 60;
-    }
+    // if (degreesAwayFromCenter < 60) {
+    //   trafficMultiplier = degreesAwayFromCenter / 60;
+    // }
     const latP = 1 - (y + 0.5) / H;
     const latitudeRadians = Math.PI * latP;  // Range (0, pi)
     const area = Math.sin(latitudeRadians);
     const cat = (catchment[i] || 0) + area;
     delete catchment[i];
-    const trafficVolumeToDraw = cat * trafficMultiplier
+    const trafficVolumeToDraw = cat * trafficMultiplier;
     const p = closedSet[i];
     if (p !== null) {
-      RecordTrafficInGreatCircle(i, p, trafficVolumeToDraw);
       catchment[p] = (catchment[p] || 0) + cat;
+      if (trafficVolumeToDraw > 20) {
+        // Only draw the brightest paths to save time.
+        RecordTrafficInGreatCircle(i, p, trafficVolumeToDraw);
+      }
     }
   }
-  if (((trialNumber % 10) > 0) && (trialNumber > 5)) {
+  if (((trialNumber % 10) > 0) && (trialNumber > 10)) {
     console.log('Skipping render stage.');
     return;
   }
   console.log('Sorting vertices.', Object.keys(traffic).length);
   verticesInCostOrder.sort((i, j) => {
-    if (traffic[i] < traffic[j]) {
+    const ti = traffic[i] || 0;
+    const tj = traffic[j] || 0;
+    if (ti < tj) {
       return 1;
     }
-    if (traffic[i] > traffic[j]) {
+    if (ti > tj) {
       return -1;
     }
     return 0;
   });
-  console.log('Analyzing traffic.');
-  let maxTraffic = 0;
-  for (const i in traffic) {
-    const t = traffic[i];
-    maxTraffic = Math.max(t, maxTraffic);
-  }
-  const maxLogTraffic = Math.log(maxTraffic);
-  const minLogTraffic = 0.6 * maxLogTraffic;
   console.log('Drawing canvas.');
   const canvas = createCanvas(W, H);
   const ctx = canvas.getContext('2d');
+  const elevRange = maxElevation - minElevation;
   for (let i = 0; i < N; i++) {
     const [x, y] = Deindex(i);
-    const elevRange = maxElevation - minElevation;
     const elev = GetElevationOfVertex(i);
     const elevP = (elev - minElevation) / elevRange;
     const rgb = Math.floor(255 * elevP);
     ctx.fillStyle = `rgb(${rgb}, ${rgb}, ${rgb})`;
     ctx.fillRect(x, y, 1, 1);
-    const t = traffic[i] || 0;
-    const logT = t > 0 ? Math.log(t) : 0;
-    if (logT >= minLogTraffic) {
-      const howRed = (logT - minLogTraffic) / (maxLogTraffic - minLogTraffic);
-      const formattedAlpha = howRed.toFixed(3);
-      ctx.fillStyle = `rgba(255, 0, 0, ${formattedAlpha})`;
-      ctx.fillRect(x, y, 1, 1);
-    }
+  }
+  console.log('Marking top vertices with color.');
+  const redPixelCount = Math.floor(W / 2);
+  const orangePixelCount = 2 * W;
+  const yellowPixelCount = 15 * W;
+  const greenPixelCount = 50 * W;
+  const greenTraffic = traffic[verticesInCostOrder[greenPixelCount]] || 1;
+  const denom = Math.sqrt(greenTraffic);
+  for (let k = greenPixelCount; k < verticesInCostOrder.length; k++) {
+    const i = verticesInCostOrder[k];
+    const [x, y] = Deindex(i);
+    const t = traffic[i] || 1;
+    // const saturation = Math.sqrt(t) / denom;
+    // const maxAlpha = Math.PI / 4;
+    // const alpha = saturation * maxAlpha;
+    const alpha = Math.sqrt(t) / denom;
+    ctx.fillStyle = `rgba(148, 245, 44, ${alpha})`;
+    ctx.fillRect(x, y, 1, 1);
+  }
+  for (let k = yellowPixelCount; k < greenPixelCount && k < verticesInCostOrder.length; k++) {
+    const i = verticesInCostOrder[k];
+    const [x, y] = Deindex(i);
+    // p = 0 means a big yellow circle
+    // p = 1 means a small green circle
+    // Interpolate in between
+    const p = (k - yellowPixelCount) / (greenPixelCount - yellowPixelCount);
+    const diameter = p + (1 - p) * 5;
+    const radius = 0.5 * diameter;
+    ctx.fillStyle = BlendRgbColors([255, 255, 0], [148, 245, 44], p);
+    //ctx.fillStyle = `rgb(148, 245, 44)`;
+    ctx.beginPath();
+    ctx.arc(x + 0.5, y + 0.5, radius, 0, 2 * Math.PI);
+    ctx.fill();
+  }
+  for (let k = orangePixelCount; k < yellowPixelCount && k < verticesInCostOrder.length; k++) {
+    const [x, y] = Deindex(verticesInCostOrder[k]);
+    ctx.fillStyle = `rgb(255, 255, 0)`;
+    ctx.beginPath();
+    ctx.arc(x + 0.5, y + 0.5, 2.5, 0, 2 * Math.PI);
+    ctx.fill();
+  }
+  for (let k = redPixelCount; k < orangePixelCount && k < verticesInCostOrder.length; k++) {
+    const [x, y] = Deindex(verticesInCostOrder[k]);
+    ctx.fillStyle = `rgb(255, 128, 0)`;
+    ctx.beginPath();
+    ctx.arc(x + 0.5, y + 0.5, 3.5, 0, 2 * Math.PI);
+    ctx.fill();
+  }
+  for (let k = 0; k < redPixelCount && k < verticesInCostOrder.length; k++) {
+    const [x, y] = Deindex(verticesInCostOrder[k]);
+    ctx.fillStyle = `rgb(255, 0, 0)`;
+    ctx.beginPath();
+    ctx.arc(x + 0.5, y + 0.5, 4.5, 0, 2 * Math.PI);
+    ctx.fill();
   }
   const filename = `moon-${trialNumber}.png`;
   await OutputCanvasAsPngFile(canvas, filename);
@@ -584,11 +702,13 @@ async function FloodfillStartingFromRandomPixel(trialNumber) {
 async function Main() {
   await LoadHeightmapFromTifImage();
   AnalyzeHeightmap();
+  await ReadTrafficFromFile();
   let trialNumber = 1;
-  while (true) {
+  //while (true) {
     await FloodfillStartingFromRandomPixel(trialNumber);
+    await WriteTrafficToFile();
     trialNumber++;
-  }
+  //}
   console.log('Done.');
 }
 
