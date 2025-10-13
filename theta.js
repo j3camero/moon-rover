@@ -655,36 +655,37 @@ async function FloodfillStartingFromRandomPixel(trialNumber) {
     ctx.fillRect(x, y, 1, 1);
   }
   console.log('Marking top vertices with color.');
-  const redPixelCount = Math.floor(W / 2);
+  const redPixelCount = Math.floor(W / 4);
   const orangePixelCount = 2 * W;
   const yellowPixelCount = 15 * W;
-  const denom = traffic[verticesInCostOrder[redPixelCount]];
+  const denom = traffic[verticesInCostOrder[0]];
+  const maxLineWidth = 18;
   for (let k = yellowPixelCount; k < verticesInCostOrder.length; k++) {
     const i = verticesInCostOrder[k];
     const [x, y] = Deindex(i);
     const t = traffic[i] || 0;
-    const lineWidth = 9 * t / denom;
+    const lineWidth = maxLineWidth * t / denom;
     DrawTrafficInPixel(ctx, x, y, lineWidth, 148, 245, 44);
   }
   for (let k = orangePixelCount; k < yellowPixelCount && k < verticesInCostOrder.length; k++) {
     const i = verticesInCostOrder[k];
     const [x, y] = Deindex(i);
     const t = traffic[i] || 0;
-    const lineWidth = 9 * t / denom;
+    const lineWidth = maxLineWidth * t / denom;
     DrawTrafficInPixel(ctx, x, y, lineWidth, 255, 255, 0);
   }
   for (let k = redPixelCount; k < orangePixelCount && k < verticesInCostOrder.length; k++) {
     const i = verticesInCostOrder[k];
     const [x, y] = Deindex(i);
     const t = traffic[i] || 0;
-    const lineWidth = 9 * t / denom;
+    const lineWidth = maxLineWidth * t / denom;
     DrawTrafficInPixel(ctx, x, y, lineWidth, 255, 128, 0);
   }
   for (let k = 0; k < redPixelCount && k < verticesInCostOrder.length; k++) {
     const i = verticesInCostOrder[k];
     const [x, y] = Deindex(i);
     const t = traffic[i] || 0;
-    const lineWidth = 9;
+    const lineWidth = maxLineWidth * t / denom;
     DrawTrafficInPixel(ctx, x, y, lineWidth, 255, 0, 0);
   }
   const filename = `moon-${trialNumber}.png`;
