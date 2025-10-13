@@ -517,6 +517,19 @@ async function ReadTrafficFromFile() {
   console.log('Successfully read traffic from file. lineCount:', lineCount);
 }
 
+function DrawTrafficInPixel(ctx, x, y, lineWidth, r, g, b) {
+  if (lineWidth > 1) {
+    const radius = 0.5 * lineWidth;
+    ctx.fillStyle = `rgb(${r}, ${g}, ${b})`;
+    ctx.beginPath();
+    ctx.arc(x + 0.5, y + 0.5, radius, 0, 2 * Math.PI);
+    ctx.fill();
+  } else {
+    ctx.fillStyle = `rgba(${r}, ${g}, ${b}, ${lineWidth})`;
+    ctx.fillRect(x, y, 1, 1);
+  }
+}
+
 async function FloodfillStartingFromRandomPixel(trialNumber) {
   console.log('Trial', trialNumber);
   const [centerX, centerY] = ChooseBlueNoisePixel();
@@ -645,55 +658,34 @@ async function FloodfillStartingFromRandomPixel(trialNumber) {
   const redPixelCount = Math.floor(W / 2);
   const orangePixelCount = 2 * W;
   const yellowPixelCount = 15 * W;
-  const greenPixelCount = 50 * W;
-  const greenTraffic = traffic[verticesInCostOrder[greenPixelCount]] || 1;
-  const denom = Math.sqrt(greenTraffic);
-  for (let k = greenPixelCount; k < verticesInCostOrder.length; k++) {
+  const denom = traffic[verticesInCostOrder[redPixelCount]];
+  for (let k = yellowPixelCount; k < verticesInCostOrder.length; k++) {
     const i = verticesInCostOrder[k];
     const [x, y] = Deindex(i);
-    const t = traffic[i] || 1;
-    // const saturation = Math.sqrt(t) / denom;
-    // const maxAlpha = Math.PI / 4;
-    // const alpha = saturation * maxAlpha;
-    const alpha = Math.sqrt(t) / denom;
-    ctx.fillStyle = `rgba(148, 245, 44, ${alpha})`;
-    ctx.fillRect(x, y, 1, 1);
-  }
-  for (let k = yellowPixelCount; k < greenPixelCount && k < verticesInCostOrder.length; k++) {
-    const i = verticesInCostOrder[k];
-    const [x, y] = Deindex(i);
-    // p = 0 means a big yellow circle
-    // p = 1 means a small green circle
-    // Interpolate in between
-    const p = (k - yellowPixelCount) / (greenPixelCount - yellowPixelCount);
-    const diameter = p + (1 - p) * 5;
-    const radius = 0.5 * diameter;
-    ctx.fillStyle = BlendRgbColors([255, 255, 0], [148, 245, 44], p);
-    //ctx.fillStyle = `rgb(148, 245, 44)`;
-    ctx.beginPath();
-    ctx.arc(x + 0.5, y + 0.5, radius, 0, 2 * Math.PI);
-    ctx.fill();
+    const t = traffic[i] || 0;
+    const lineWidth = 9 * t / denom;
+    DrawTrafficInPixel(ctx, x, y, lineWidth, 148, 245, 44);
   }
   for (let k = orangePixelCount; k < yellowPixelCount && k < verticesInCostOrder.length; k++) {
-    const [x, y] = Deindex(verticesInCostOrder[k]);
-    ctx.fillStyle = `rgb(255, 255, 0)`;
-    ctx.beginPath();
-    ctx.arc(x + 0.5, y + 0.5, 2.5, 0, 2 * Math.PI);
-    ctx.fill();
+    const i = verticesInCostOrder[k];
+    const [x, y] = Deindex(i);
+    const t = traffic[i] || 0;
+    const lineWidth = 9 * t / denom;
+    DrawTrafficInPixel(ctx, x, y, lineWidth, 255, 255, 0);
   }
   for (let k = redPixelCount; k < orangePixelCount && k < verticesInCostOrder.length; k++) {
-    const [x, y] = Deindex(verticesInCostOrder[k]);
-    ctx.fillStyle = `rgb(255, 128, 0)`;
-    ctx.beginPath();
-    ctx.arc(x + 0.5, y + 0.5, 3.5, 0, 2 * Math.PI);
-    ctx.fill();
+    const i = verticesInCostOrder[k];
+    const [x, y] = Deindex(i);
+    const t = traffic[i] || 0;
+    const lineWidth = 9 * t / denom;
+    DrawTrafficInPixel(ctx, x, y, lineWidth, 255, 128, 0);
   }
   for (let k = 0; k < redPixelCount && k < verticesInCostOrder.length; k++) {
-    const [x, y] = Deindex(verticesInCostOrder[k]);
-    ctx.fillStyle = `rgb(255, 0, 0)`;
-    ctx.beginPath();
-    ctx.arc(x + 0.5, y + 0.5, 4.5, 0, 2 * Math.PI);
-    ctx.fill();
+    const i = verticesInCostOrder[k];
+    const [x, y] = Deindex(i);
+    const t = traffic[i] || 0;
+    const lineWidth = 9;
+    DrawTrafficInPixel(ctx, x, y, lineWidth, 255, 0, 0);
   }
   const filename = `moon-${trialNumber}.png`;
   await OutputCanvasAsPngFile(canvas, filename);
