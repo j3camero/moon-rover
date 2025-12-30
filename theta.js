@@ -424,6 +424,41 @@ function RecordTrafficInGreatCircle(i, j, volume) {
   }
 }
 
+// A cache of known promising routes for the rover to follow. How does it know?
+// Because these are the highest traffic edges used in previous floodfills.
+// With each iteration of the floodfill algorithm, the cumulative traffic of
+// the most useful paths grows.
+const highTrafficEdgeCache = {};
+
+function RecordHighTrafficEdge(i, j, trafficVolume) {
+  if (trafficVolume < 10000) {
+    // Only save the busiest paths to save memory.
+    return;
+  }
+  const [x1, y1] = Deindex(i);
+  const [x2, y2] = Deindex(j);
+  if (x1 === x2 && Math.abs(y2 - y1) === 1) {
+    return;
+  }
+  if (y1 === y2 && Math.abs(x2 - x1) === 1) {
+    return;
+  }
+  if (!(i in highTrafficEdgeCache)) {
+    highTrafficEdgeCache[i] = {};
+  }
+  if (!(j in highTrafficEdgeCache)) {
+    highTrafficEdgeCache[j] = {};
+  }
+  const cost = CalculateGreatCircleTravelTimeBetweenPixelsByIndex(i, j);
+  // Save 2 copies of the edge so it's quick to look up using either i or j.
+  highTrafficEdgeCache[i][j] = cost;
+  highTrafficEdgeCache[j][i] = cost;
+}
+
+function GetHighTrafficEdges(i) {
+  return highTrafficEdgeCache[i] || {};
+}
+
 // Choose a random pixel with a uniform distribution over the sphere.
 // Pixels near the equator are more likely to be chosen, proportional to their
 // surface area on the sphere.
@@ -533,6 +568,9 @@ function DrawTrafficInPixel(ctx, x, y, lineWidth, r, g, b) {
 
 async function FloodfillStartingFromRandomPixel(trialNumber) {
   console.log('Trial', trialNumber);
+  const startTime = Date.now();
+  const pathCacheSize = Object.keys(highTrafficEdgeCache).length;
+  console.log('Pixels with cached high traffic paths:', pathCacheSize);
   const [centerX, centerY] = ChooseBlueNoisePixel();
   console.log('Floodfill starting from pixel', centerX, centerY);
   const centerIndex = PixelIndex(centerX, centerY);
@@ -564,11 +602,8 @@ async function FloodfillStartingFromRandomPixel(trialNumber) {
       nextPercentToReport += 10;
     }
     const adjacent = GetAdjacentPixels(i);
-    //console.log('Adjacent pixel count:', adjacent.length);
     for (const j of adjacent) {
-      //console.log('Trying adjacent', j);
       if (j in closedSet) {
-        //console.log('Already in closed set.');
         continue;
       }
       // Process the shortcut before the direct route because it is usually
@@ -592,8 +627,24 @@ async function FloodfillStartingFromRandomPixel(trialNumber) {
         }
       }
     }
+    const highTrafficEdges = GetHighTrafficEdges(i);
+    for (const j in highTrafficEdges) {
+      if (j in closedSet) {
+        continue;
+      }
+      const dt = highTrafficEdges[j];
+      const newCost = f + dt;
+      const lowestCostSoFar = openSet[j] || Infinity;
+      if (newCost < lowestCostSoFar) {
+        pq.enqueue({ i: j, f: newCost, p: i, fp: f });
+        openSet[j] = newCost;
+      }
+    }
   }
-  console.log('Floodfilled', verticesInCostOrder.length, 'pixels.');
+  const endTime = Date.now();
+  const elapsedTime = endTime - startTime;
+  const elapsedSeconds = Math.round(elapsedTime / 1000);
+  console.log('Floodfilled', verticesInCostOrder.length, 'pixels in', elapsedSeconds, 'seconds.');
   if (verticesInCostOrder.length < N / 2) {
     console.log('Floodfilled minority component.');
     return;
@@ -617,9 +668,10 @@ async function FloodfillStartingFromRandomPixel(trialNumber) {
     const p = closedSet[i];
     if (p !== null) {
       catchment[p] = (catchment[p] || 0) + cat;
-      if (trafficVolumeToDraw > 20) {
+      if (trafficVolumeToDraw > 100) {
         // Only draw the brightest paths to save time.
         RecordTrafficInGreatCircle(i, p, trafficVolumeToDraw);
+        RecordHighTrafficEdge(i, p, trafficVolumeToDraw);
       }
     }
   }
