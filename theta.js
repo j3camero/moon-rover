@@ -608,16 +608,12 @@ async function FloodfillStartingFromRandomPixel(trialNumber) {
     const dot = a * cx + b * cy + c * cz;
     const radiansAwayFromCenter = Math.acos(dot);
     const degreesAwayFromCenter = 180 * radiansAwayFromCenter / Math.PI;
-    let trafficMultiplier = 1;
-    // if (degreesAwayFromCenter < 60) {
-    //   trafficMultiplier = degreesAwayFromCenter / 60;
-    // }
     const latP = 1 - (y + 0.5) / H;
     const latitudeRadians = Math.PI * latP;  // Range (0, pi)
     const area = Math.sin(latitudeRadians);
     const cat = (catchment[i] || 0) + area;
     delete catchment[i];
-    const trafficVolumeToDraw = cat * trafficMultiplier;
+    const trafficVolumeToDraw = cat;
     const p = closedSet[i];
     if (p !== null) {
       catchment[p] = (catchment[p] || 0) + cat;
