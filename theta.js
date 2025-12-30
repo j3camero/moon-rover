@@ -402,8 +402,9 @@ function CalculateGreatCirclePixelPath(x1, y1, x2, y2) {
 function CalculateGreatCircleTravelTimeBetweenPixelsByIndex(i, j) {
   const [x1, y1] = Deindex(i);
   const [x2, y2] = Deindex(j);
-  return CalculateGreatCircleTravelTimeBetweenFractionalPixelCoordinates(
+  const t = CalculateGreatCircleTravelTimeBetweenFractionalPixelCoordinates(
     x1, y1, x2, y2);
+  return t;
 }
 
 function CalculateGreatCirclePixelPathByIndex(i, j) {
@@ -433,8 +434,58 @@ function ChooseRandomPixel() {
   return [x, y];
 }
 
+function PopRandom(array) {
+  if (array.length === 0) {
+    throw 'No pop from empty array.';
+  }
+  const randomIndex = Math.floor(Math.random() * array.length);
+  const removedElement = array.splice(randomIndex, 1)[0];
+  return removedElement;
+}
+
+const importantPixels = [
+  [1390, 1758],
+  [3000, 512],
+  [3816, 10],
+  [4790, 1545],
+  [5069, 1585],
+  [9, 2361],
+  [542, 2376],
+  [484, 1780],
+  [2873, 2016],
+  [3076, 1344],
+  [3910, 753],
+  [2189, 1943],
+  [819, 843],
+  [223, 762],
+  [5473, 1398],
+  [5363, 1728],
+  [4485, 2365],
+  [2036, 2775],
+  [3274, 2869],
+  [4066, 1200],
+  [3734, 1270],
+  [5258, 898],
+  [126, 1139],
+  [992, 1114],
+  [1072, 1618],
+  [1609, 1836],
+  [1164, 1661],
+  [3924, 1409],
+  [5007, 2022],
+  [4906, 1726],
+  [4061, 2212],
+  [5108, 132],
+  [4361, 2027],
+];
+
 function ChooseBlueNoisePixel() {
   console.log('Choosing random pixel with blue noise.');
+  if (importantPixels.length > 0) {
+    const rp = PopRandom(importantPixels);
+    chosenPixels.push(rp);
+    return rp;
+  }
   let mostIsolatedPoint = null;
   let maxMinAngle = 0;
   for (let i = 0; i < 1000; i++) {
@@ -626,7 +677,7 @@ async function FloodfillStartingFromRandomPixel(trialNumber) {
       }
     }
   }
-  if (((trialNumber % 10) > 0) && (trialNumber > 10)) {
+  if (((trialNumber % 10) > 0) && (trialNumber > 40)) {
     console.log('Skipping render stage.');
     return;
   }
@@ -697,11 +748,11 @@ async function Main() {
   AnalyzeHeightmap();
   await ReadTrafficFromFile();
   let trialNumber = 1;
-  //while (true) {
+  while (true) {
     await FloodfillStartingFromRandomPixel(trialNumber);
     await WriteTrafficToFile();
     trialNumber++;
-  //}
+  }
   console.log('Done.');
 }
 
