@@ -425,7 +425,7 @@ struct PQNode {
 };
 
 static void FloodfillStartingFromRandomPixel(int trialNumber) {
-    std::cout << "Trial " << trialNumber << std::endl;
+    std::cout << "." << std::flush;
 
     auto [centerX, centerY] = ChooseBlueNoisePixel();
     int centerIndex = PixelIndex(centerX, centerY);
@@ -590,6 +590,7 @@ void ApproximateAllPaths(int numTrials) {
 
     std::unique_lock<std::mutex> lock(cv_mutex);
     cv.wait(lock, [&]{ return active_count == 0; });
+    std::cout << "\n";
 }
 
 static bool IsEdgePaved(int i, int j) {
