@@ -1,0 +1,640 @@
+// C++ translation of theta.js — Theta* pathfinding on a lunar heightmap.
+
+#include <algorithm>
+#include <chrono>
+#include <cmath>
+#include <cstdint>
+#include <fstream>
+#include <iomanip>
+#include <iostream>
+#include <limits>
+#include <optional>
+#include <queue>
+#include <random>
+#include <stdexcept>
+#include <string>
+#include <unordered_map>
+#include <utility>
+#include <vector>
+#include <tiffio.h>
+#include <png.h>
+
+static const double kMoonRadius = 1727400.0;
+
+static std::vector<uint16_t> g_heightmapData;
+static int W = 0, H = 0, N = 0;
+
+static std::unordered_map<int, double> g_traffic;
+static std::vector<std::pair<int,int>> g_chosenPixels;
+
+static double g_minElevation = std::numeric_limits<double>::infinity();
+static double g_maxElevation = 0.0;
+
+// g_highTrafficEdgeCache[i][j] = great-circle travel cost i→j
+static std::unordered_map<int, std::unordered_map<int,double>> g_highTrafficEdgeCache;
+
+static std::mt19937 g_rng(std::random_device{}());
+
+// ---- Canvas ------------------------------------------------------------------
+
+struct Canvas {
+    int W, H;
+    std::vector<uint8_t> rgb; // packed R,G,B per pixel
+
+    Canvas(int w, int h) : W(w), H(h), rgb(w * h * 3, 0) {}
+
+    void setPixelRGB(int x, int y, uint8_t r, uint8_t g, uint8_t b) {
+        if (x < 0 || x >= W || y < 0 || y >= H) return;
+        int i = (y * W + x) * 3;
+        rgb[i] = r; rgb[i+1] = g; rgb[i+2] = b;
+    }
+
+    void blendPixelRGBA(int x, int y, uint8_t r, uint8_t g, uint8_t b, double alpha) {
+        if (x < 0 || x >= W || y < 0 || y >= H) return;
+        int i = (y * W + x) * 3;
+        rgb[i]   = (uint8_t)(rgb[i]   * (1.0 - alpha) + r * alpha + 0.5);
+        rgb[i+1] = (uint8_t)(rgb[i+1] * (1.0 - alpha) + g * alpha + 0.5);
+        rgb[i+2] = (uint8_t)(rgb[i+2] * (1.0 - alpha) + b * alpha + 0.5);
+    }
+
+    // Filled circle matching canvas arc() + fill()
+    void fillCircle(double cx, double cy, double radius,
+                    uint8_t r, uint8_t g, uint8_t b) {
+        int x0 = (int)std::floor(cx - radius);
+        int x1 = (int)std::ceil(cx + radius);
+        int y0 = (int)std::floor(cy - radius);
+        int y1 = (int)std::ceil(cy + radius);
+        double r2 = radius * radius;
+        for (int py = y0; py <= y1; py++) {
+            for (int px = x0; px <= x1; px++) {
+                double dx = px + 0.5 - cx;
+                double dy = py + 0.5 - cy;
+                if (dx*dx + dy*dy <= r2) setPixelRGB(px, py, r, g, b);
+            }
+        }
+    }
+};
+
+bool OutputCanvasAsPngFile(const Canvas& canvas, const std::string& filename) {
+    std::cout << "Outputting file " << filename << std::endl;
+    FILE* fp = fopen(filename.c_str(), "wb");
+    if (!fp) {
+        std::cerr << "Failed to open " << filename << " for writing" << std::endl;
+        return false;
+    }
+    png_structp png = png_create_write_struct(
+        PNG_LIBPNG_VER_STRING, nullptr, nullptr, nullptr);
+    if (!png) { fclose(fp); return false; }
+    png_infop info = png_create_info_struct(png);
+    if (!info) { png_destroy_write_struct(&png, nullptr); fclose(fp); return false; }
+    if (setjmp(png_jmpbuf(png))) {
+        png_destroy_write_struct(&png, &info);
+        fclose(fp);
+        return false;
+    }
+    png_init_io(png, fp);
+    png_set_IHDR(png, info, canvas.W, canvas.H, 8, PNG_COLOR_TYPE_RGB,
+                 PNG_INTERLACE_NONE, PNG_COMPRESSION_TYPE_DEFAULT,
+                 PNG_FILTER_TYPE_DEFAULT);
+    png_write_info(png, info);
+    for (int y = 0; y < canvas.H; y++)
+        png_write_row(png, (png_const_bytep)&canvas.rgb[y * canvas.W * 3]);
+    png_write_end(png, nullptr);
+    png_destroy_write_struct(&png, &info);
+    fclose(fp);
+    std::cout << "Wrote " << filename << std::endl;
+    return true;
+}
+
+// ---- Math helpers ------------------------------------------------------------
+
+static double Distance3D(double x1, double y1, double z1,
+                         double x2, double y2, double z2) {
+    double dx = x1-x2, dy = y1-y2, dz = z1-z2;
+    return std::sqrt(dx*dx + dy*dy + dz*dz);
+}
+
+struct Vec3 { double x, y, z; };
+struct Vec2 { double x, y; };
+
+static Vec3 UnitSphereCoordinates(double x, double y) {
+    double latP    = 1.0 - (y + 0.5) / H;
+    double latRad  = M_PI * latP;
+    double longP   = x / W + 0.5;
+    if (longP > 1.0) longP -= 1.0;
+    double longRad = 2.0 * M_PI * longP;
+    double slat = std::sin(latRad), clat = std::cos(latRad);
+    double slong = std::sin(longRad), clong = std::cos(longRad);
+    return {slat * clong, slat * slong, clat};
+}
+
+static Vec2 UnitSphere3DToPixel2D(double x, double y, double z) {
+    double latRad = std::acos(std::clamp(z, -1.0, 1.0));
+    double dxy = std::sqrt(x*x + y*y);
+    if (dxy < 1e-10) {
+        if (z > 0) return {0.0, 0.0};
+        else       return {0.0, (double)(H - 1)};
+    }
+    double sign_y = (y > 0) - (y < 0);
+    double longRad = sign_y * std::acos(std::clamp(x / dxy, -1.0, 1.0));
+    double longP = longRad / (2.0 * M_PI) + 0.5;
+    if (longP > 1.0) longP -= 1.0;
+    double latP = latRad / M_PI;
+    return {longP * W, (1.0 - latP) * H - 0.5};
+}
+
+static Vec3 Normalize3D(double x, double y, double z) {
+    double d = std::sqrt(x*x + y*y + z*z);
+    return {x/d, y/d, z/d};
+}
+
+// ---- Index helpers -----------------------------------------------------------
+
+static std::pair<int,int> Deindex(int i) { return {i % W, i / W}; }
+static int PixelIndex(int x, int y)      { return W * y + x; }
+
+// ---- Heightmap ---------------------------------------------------------------
+
+bool LoadHeightmapFromTifImage() {
+    std::cout << "Loading heightmap" << std::endl;
+    TIFF* tif = TIFFOpen("ldem_16_uint.tif", "r");
+    if (!tif) {
+        std::cerr << "Failed to open ldem_16_uint.tif" << std::endl;
+        return false;
+    }
+    uint32_t w, h;
+    TIFFGetField(tif, TIFFTAG_IMAGEWIDTH,  &w);
+    TIFFGetField(tif, TIFFTAG_IMAGELENGTH, &h);
+    W = (int)w; H = (int)h; N = W * H;
+    g_heightmapData.resize(N);
+    for (int row = 0; row < H; row++)
+        TIFFReadScanline(tif, &g_heightmapData[row * W], row);
+    TIFFClose(tif);
+    std::cout << "Heightmap loaded\n" << W << " x " << H << " = " << N << " pixels" << std::endl;
+    return true;
+}
+
+static double GetElevationOfVertex(int i) {
+    return g_heightmapData[i] / 2.0 + kMoonRadius;
+}
+
+static double GetElevationOfPixel(int x, int y) {
+    return GetElevationOfVertex(y * W + x);
+}
+
+void AnalyzeHeightmap() {
+    std::cout << "Analyzing heightmap." << std::endl;
+    for (int x = 0; x < W; x++)
+        for (int y = 0; y < H; y++) {
+            double e = GetElevationOfPixel(x, y);
+            if (e < g_minElevation) g_minElevation = e;
+            if (e > g_maxElevation) g_maxElevation = e;
+        }
+}
+
+static double GetElevationInterpolated(double x, double y) {
+    if (y <= -1.0) throw std::runtime_error("y is negative");
+    if (y >= H)    throw std::runtime_error("y is too large");
+    y = std::max(y, 0.0);
+    y = std::min(y, (double)(H - 1));
+    if (x < 0.0) throw std::runtime_error("x is negative");
+    if (x > W)   throw std::runtime_error("x is too large");
+    int left   = (int)std::floor(x) % W;
+    int right  = (int)std::ceil(x)  % W;
+    int top    = (int)std::floor(y);
+    int bottom = (int)std::ceil(y);
+    double a = GetElevationOfPixel(left,  top);
+    double b = GetElevationOfPixel(right, top);
+    double c = GetElevationOfPixel(left,  bottom);
+    double d = GetElevationOfPixel(right, bottom);
+    double xf = std::fmod(x, 1.0);
+    double yf = std::fmod(y, 1.0);
+    return a + (b-a)*xf + (c-a)*yf + (d-b-c+a)*xf*yf;
+}
+
+// ---- Travel time calculations ------------------------------------------------
+
+static std::optional<double> CalcTravelTimeFromDistSlope(double dist, double slope) {
+    const double maxSlope = 0.06;
+    if (slope >= maxSlope) return std::nullopt;
+    double speed = 10.0 * (1.0 - slope / maxSlope);
+    return dist / speed;
+}
+
+static std::optional<double> CalcDirectTravelTime(
+    double x1, double y1, double x2, double y2)
+{
+    auto [ax,ay,az] = UnitSphereCoordinates(x1, y1);
+    auto [bx,by,bz] = UnitSphereCoordinates(x2, y2);
+    double ae = GetElevationInterpolated(x1, y1);
+    double be = GetElevationInterpolated(x2, y2);
+    double ar = kMoonRadius + ae, br = kMoonRadius + be;
+    double dist = Distance3D(ax*ar, ay*ar, az*ar, bx*br, by*br, bz*br);
+    return CalcTravelTimeFromDistSlope(dist, std::abs(ae - be) / dist);
+}
+
+static std::optional<double> CalcGreatCircleTravelTime(
+    double x1, double y1, double x2, double y2)
+{
+    double dx  = x2 - x1;
+    double wdx = std::min(std::abs(dx), W - std::abs(dx));
+    if (wdx >= std::floor(W / 2.0) - 1.0) return std::nullopt;
+    if (wdx < 1.0) {
+        double dy  = y2 - y1;
+        double ady = std::abs(dy);
+        if (ady < 1.0 && wdx*wdx + ady*ady < 1.0)
+            return CalcDirectTravelTime(x1, y1, x2, y2);
+    }
+    auto [ax,ay,az] = UnitSphereCoordinates(x1, y1);
+    auto [bx,by,bz] = UnitSphereCoordinates(x2, y2);
+    auto [px,py,pz] = Normalize3D(0.5*(ax+bx), 0.5*(ay+by), 0.5*(az+bz));
+    auto [x3,y3]    = UnitSphere3DToPixel2D(px, py, pz);
+    auto left  = CalcGreatCircleTravelTime(x1, y1, x3, y3);
+    if (!left)  return std::nullopt;
+    auto right = CalcGreatCircleTravelTime(x3, y3, x2, y2);
+    if (!right) return std::nullopt;
+    return *left + *right;
+}
+
+// ---- Great-circle pixel path -------------------------------------------------
+
+using PathMap = std::unordered_map<int, double>;
+
+static PathMap CalcGreatCirclePixelPath(double x1, double y1, double x2, double y2) {
+    PathMap path;
+    double dx  = x2 - x1;
+    double wdx = std::min(std::abs(dx), W - std::abs(dx));
+    if (wdx >= std::floor(W / 2.0) - 1.0) return path;
+    if (wdx < 1.0) {
+        double dy  = y2 - y1;
+        double ady = std::abs(dy);
+        if (ady < 1.0) {
+            double dsq = wdx*wdx + ady*ady;
+            if (dsq < 1.0) {
+                int ix = (int)std::floor(x1), iy = (int)std::floor(y1);
+                int jx = (int)std::floor(x2), jy = (int)std::floor(y2);
+                int pi = PixelIndex(ix, iy);
+                int pj = PixelIndex(jx, jy);
+                double d = std::sqrt(dsq);
+                if (pi == pj) {
+                    path[pi] = d;
+                } else if (ix == jx) {
+                    // Vertical — two pixels
+                    double interY = std::floor(std::max(y1, y2));
+                    double ip = (interY - y1) / (y2 - y1);
+                    path[pi] = d * ip;
+                    path[pj] = d * (1.0 - ip);
+                } else if (iy == jy) {
+                    // Horizontal — two pixels
+                    double interX = std::floor(std::max(x1, x2));
+                    double ip = (interX - x1) / (x2 - x1);
+                    path[pi] = d * ip;
+                    path[pj] = d * (1.0 - ip);
+                } else {
+                    // Diagonal — three pixels
+                    int kx = (int)std::floor(std::max(x1, x2));
+                    int ky = (int)std::floor(std::max(y1, y2));
+                    int pk = PixelIndex(kx, ky);
+                    double ip = std::min((kx - x1) / (x2 - x1), (ky - y1) / (y2 - y1));
+                    double jp = std::min((kx - x2) / (x1 - x2), (ky - y2) / (y1 - y2));
+                    path[pi] = d * ip;
+                    path[pj] = d * jp;
+                    path[pk] = d * (1.0 - ip - jp);
+                }
+                return path;
+            }
+        }
+    }
+    auto [ax,ay,az] = UnitSphereCoordinates(x1, y1);
+    auto [bx,by,bz] = UnitSphereCoordinates(x2, y2);
+    auto [px,py,pz] = Normalize3D(0.5*(ax+bx), 0.5*(ay+by), 0.5*(az+bz));
+    auto [x3,y3]    = UnitSphere3DToPixel2D(px, py, pz);
+    PathMap left  = CalcGreatCirclePixelPath(x1, y1, x3, y3);
+    PathMap right = CalcGreatCirclePixelPath(x3, y3, x2, y2);
+    for (auto& [k, v] : left)  path[k] = v;
+    for (auto& [k, v] : right) {
+        auto it = path.find(k);
+        path[k] = v + (it != path.end() ? it->second : 0.0);
+    }
+    return path;
+}
+
+static std::optional<double> CalcGreatCircleTravelTimeByIndex(int i, int j) {
+    auto [x1,y1] = Deindex(i);
+    auto [x2,y2] = Deindex(j);
+    return CalcGreatCircleTravelTime(x1, y1, x2, y2);
+}
+
+static PathMap CalcGreatCirclePixelPathByIndex(int i, int j) {
+    auto [x1,y1] = Deindex(i);
+    auto [x2,y2] = Deindex(j);
+    return CalcGreatCirclePixelPath(x1, y1, x2, y2);
+}
+
+static void RecordTrafficInGreatCircle(int i, int j, double volume) {
+    if (i < 0 || j < 0) return;
+    PathMap path = CalcGreatCirclePixelPathByIndex(i, j);
+    for (auto& [k, v] : path)
+        g_traffic[k] += v * volume;
+}
+
+static void RecordHighTrafficEdge(int i, int j, double trafficVolume) {
+    if (trafficVolume < 10000.0) return;
+    auto [x1,y1] = Deindex(i);
+    auto [x2,y2] = Deindex(j);
+    if (x1 == x2 && std::abs(y2 - y1) == 1) return;
+    if (y1 == y2 && std::abs(x2 - x1) == 1) return;
+    auto cost = CalcGreatCircleTravelTimeByIndex(i, j);
+    if (!cost) return;
+    g_highTrafficEdgeCache[i][j] = *cost;
+    g_highTrafficEdgeCache[j][i] = *cost;
+}
+
+static const std::unordered_map<int,double>& GetHighTrafficEdges(int i) {
+    static const std::unordered_map<int,double> empty;
+    auto it = g_highTrafficEdgeCache.find(i);
+    return it != g_highTrafficEdgeCache.end() ? it->second : empty;
+}
+
+// ---- Random pixel selection --------------------------------------------------
+
+static std::pair<int,int> ChooseRandomPixel() {
+    std::uniform_int_distribution<int>    distX(0, W - 1);
+    std::uniform_real_distribution<double> dist01(0.0, 1.0);
+    int x = distX(g_rng);
+    double spherical = 0.5 + std::asin(2.0 * dist01(g_rng) - 1.0) / M_PI;
+    int y = std::clamp((int)std::floor(spherical * H), 0, H - 1);
+    return {x, y};
+}
+
+static std::pair<int,int> ChooseBlueNoisePixel() {
+    std::cout << "Choosing random pixel with blue noise." << std::endl;
+    std::pair<int,int> best = {0, 0};
+    double maxMinAngle = 0.0;
+    for (int attempt = 0; attempt < 1000; attempt++) {
+        auto [ax, ay] = ChooseRandomPixel();
+        auto [bx,by,bz] = UnitSphereCoordinates(ax, ay);
+        double minAngle = 361.0;
+        for (auto& [cx, cy] : g_chosenPixels) {
+            auto [dx,dy,dz] = UnitSphereCoordinates(cx, cy);
+            double dot = std::clamp(bx*dx + by*dy + bz*dz, -1.0, 1.0);
+            double angleDeg = 180.0 * std::acos(dot) / M_PI;
+            if (angleDeg < minAngle) minAngle = angleDeg;
+        }
+        if (minAngle > maxMinAngle) { maxMinAngle = minAngle; best = {ax, ay}; }
+    }
+    g_chosenPixels.push_back(best);
+    std::cout << "Chose random pixel (" << best.first << ", " << best.second
+              << ") located " << std::fixed << std::setprecision(2) << maxMinAngle
+              << " degrees away from nearest seed point." << std::endl;
+    return best;
+}
+
+static std::vector<int> GetAdjacentPixels(int i) {
+    auto [x, y] = Deindex(i);
+    const int dirs[4][2] = {{1,0},{0,1},{0,-1},{-1,0}};
+    std::vector<int> adj;
+    adj.reserve(4);
+    for (auto& d : dirs) {
+        int nx = ((x + d[0]) % W + W) % W;
+        int ny = y + d[1];
+        if (ny >= 0 && ny < H) adj.push_back(PixelIndex(nx, ny));
+    }
+    return adj;
+}
+
+// ---- Traffic file I/O --------------------------------------------------------
+
+static void WriteTrafficToFile() {
+    std::cout << "Writing traffic to file." << std::endl;
+    std::ofstream f("traffic.csv");
+    for (int i = 0; i < N; i++) {
+        auto it = g_traffic.find(i);
+        f << (it != g_traffic.end() ? it->second : 0.0) << "\n";
+    }
+    std::cout << "Successfully wrote traffic to file." << std::endl;
+}
+
+static void ReadTrafficFromFile() {
+    std::ifstream f("traffic.csv");
+    if (!f.is_open()) {
+        std::cout << "No saved traffic file found. Starting fresh." << std::endl;
+        return;
+    }
+    std::cout << "Reading traffic from file." << std::endl;
+    std::string line;
+    int lineCount = 0;
+    while (std::getline(f, line)) {
+        try {
+            double t = std::stod(line);
+            if (t > 0.0) g_traffic[lineCount] = t;
+        } catch (...) {
+            std::cout << "Parse error: " << line << std::endl;
+        }
+        lineCount++;
+    }
+    std::cout << "Successfully read traffic from file. lineCount: " << lineCount << std::endl;
+}
+
+// ---- Canvas drawing ----------------------------------------------------------
+
+static void DrawTrafficInPixel(Canvas& ctx, int x, int y, double lineWidth,
+                               uint8_t r, uint8_t g, uint8_t b) {
+    if (lineWidth > 1.0) {
+        ctx.fillCircle(x + 0.5, y + 0.5, 0.5 * lineWidth, r, g, b);
+    } else {
+        ctx.blendPixelRGBA(x, y, r, g, b, lineWidth);
+    }
+}
+
+// ---- Theta* floodfill --------------------------------------------------------
+
+struct PQNode {
+    double f;
+    int i, p;   // p == -1 means no parent (root)
+    double fp;  // cost to reach p
+    bool operator>(const PQNode& o) const { return f > o.f; }
+};
+
+static void FloodfillStartingFromRandomPixel(int trialNumber) {
+    std::cout << "Trial " << trialNumber << std::endl;
+    auto startTime = std::chrono::steady_clock::now();
+
+    std::cout << "Pixels with cached high traffic paths: "
+              << g_highTrafficEdgeCache.size() << std::endl;
+
+    auto [centerX, centerY] = ChooseBlueNoisePixel();
+    std::cout << "Floodfill starting from pixel " << centerX << " " << centerY << std::endl;
+    int centerIndex = PixelIndex(centerX, centerY);
+
+    std::priority_queue<PQNode, std::vector<PQNode>, std::greater<PQNode>> pq;
+    pq.push({0.0, centerIndex, -1, 0.0});
+
+    std::unordered_map<int, double> openSet;
+    std::unordered_map<int, int>    closedSet; // value = parent index, -1 for root
+    std::vector<int> verticesInCostOrder;
+
+    int progressCount      = 0;
+    int nextPercentToReport = 0;
+
+    while (!pq.empty()) {
+        PQNode node = pq.top(); pq.pop();
+        int    i  = node.i;
+        double f  = node.f;
+        int    p  = node.p;
+        double fp = node.fp;
+
+        if (closedSet.count(i)) continue;
+        closedSet[i] = p;
+        verticesInCostOrder.push_back(i);
+        openSet.erase(i);
+
+        progressCount++;
+        double pct = 100.0 * progressCount / N;
+        if (pct > nextPercentToReport) {
+            std::cout << "Trial " << trialNumber << " - " << nextPercentToReport << " %" << std::endl;
+            nextPercentToReport += 10;
+        }
+
+        for (int j : GetAdjacentPixels(i)) {
+            if (closedSet.count(j)) continue;
+
+            // Theta* shortcut: try going from parent p directly to j
+            if (p >= 0) {
+                auto ds = CalcGreatCircleTravelTimeByIndex(p, j);
+                if (ds) {
+                    double newCost = fp + *ds;
+                    double lowest  = openSet.count(j) ? openSet[j]
+                                                      : std::numeric_limits<double>::infinity();
+                    if (newCost < lowest) {
+                        pq.push({newCost, j, p, fp});
+                        openSet[j] = newCost;
+                    }
+                }
+            }
+
+            // Direct edge i → j
+            auto dt = CalcGreatCircleTravelTimeByIndex(i, j);
+            if (dt) {
+                double newCost = f + *dt;
+                double lowest  = openSet.count(j) ? openSet[j]
+                                                  : std::numeric_limits<double>::infinity();
+                if (newCost < lowest) {
+                    pq.push({newCost, j, i, f});
+                    openSet[j] = newCost;
+                }
+            }
+        }
+
+        // High-traffic edge shortcuts
+        for (auto& [j, dt] : GetHighTrafficEdges(i)) {
+            if (closedSet.count(j)) continue;
+            double newCost = f + dt;
+            double lowest  = openSet.count(j) ? openSet[j]
+                                              : std::numeric_limits<double>::infinity();
+            if (newCost < lowest) {
+                pq.push({newCost, j, i, f});
+                openSet[j] = newCost;
+            }
+        }
+    }
+
+    auto endTime       = std::chrono::steady_clock::now();
+    int  elapsedSeconds = (int)std::chrono::duration_cast<std::chrono::seconds>(
+                              endTime - startTime).count();
+    std::cout << "Floodfilled " << verticesInCostOrder.size()
+              << " pixels in " << elapsedSeconds << " seconds." << std::endl;
+
+    if ((int)verticesInCostOrder.size() < N / 2) {
+        std::cout << "Floodfilled minority component." << std::endl;
+        return;
+    }
+
+    std::cout << "Floodfill done. Tracing paths." << std::endl;
+    std::unordered_map<int, double> catchment;
+
+    for (int k = (int)verticesInCostOrder.size() - 1; k >= 0; k--) {
+        int i      = verticesInCostOrder[k];
+        auto [x,y] = Deindex(i);
+        double latP   = 1.0 - (y + 0.5) / H;
+        double latRad = M_PI * latP;
+        double area   = std::sin(latRad);
+        double cat    = (catchment.count(i) ? catchment[i] : 0.0) + area;
+        catchment.erase(i);
+
+        int par = closedSet[i];
+        if (par >= 0) {
+            catchment[par] += cat;
+            if (cat > 100.0) {
+                RecordTrafficInGreatCircle(i, par, cat);
+                RecordHighTrafficEdge(i, par, cat);
+            }
+        }
+    }
+
+    if (((trialNumber % 10) > 0) && (trialNumber > 40)) {
+        std::cout << "Skipping render stage." << std::endl;
+        return;
+    }
+
+    std::cout << "Sorting vertices. " << g_traffic.size() << std::endl;
+    std::sort(verticesInCostOrder.begin(), verticesInCostOrder.end(), [](int a, int b) {
+        auto ia = g_traffic.find(a), ib = g_traffic.find(b);
+        double ta = (ia != g_traffic.end()) ? ia->second : 0.0;
+        double tb = (ib != g_traffic.end()) ? ib->second : 0.0;
+        return ta > tb;
+    });
+
+    std::cout << "Drawing canvas." << std::endl;
+    Canvas canvas(W, H);
+    double elevRange = g_maxElevation - g_minElevation;
+    for (int i = 0; i < N; i++) {
+        auto [x, y] = Deindex(i);
+        double elevP = (GetElevationOfVertex(i) - g_minElevation) / elevRange;
+        uint8_t v    = (uint8_t)std::floor(255.0 * elevP);
+        canvas.setPixelRGB(x, y, v, v, v);
+    }
+
+    std::cout << "Marking top vertices with color." << std::endl;
+    int redPixelCount    = W / 4;
+    int orangePixelCount = 2 * W;
+    int yellowPixelCount = 15 * W;
+    double denom = 1.0;
+    if (!verticesInCostOrder.empty()) {
+        auto it = g_traffic.find(verticesInCostOrder[0]);
+        if (it != g_traffic.end()) denom = it->second;
+    }
+    const double maxLineWidth = 18.0;
+    int vSize = (int)verticesInCostOrder.size();
+
+    auto drawBand = [&](int from, int to, uint8_t r, uint8_t g, uint8_t b) {
+        for (int k = from; k < to && k < vSize; k++) {
+            int i = verticesInCostOrder[k];
+            auto [x, y] = Deindex(i);
+            auto it = g_traffic.find(i);
+            double t = (it != g_traffic.end()) ? it->second : 0.0;
+            DrawTrafficInPixel(canvas, x, y, maxLineWidth * t / denom, r, g, b);
+        }
+    };
+
+    drawBand(yellowPixelCount, vSize,          148, 245,  44); // green
+    drawBand(orangePixelCount, yellowPixelCount, 255, 255,   0); // yellow
+    drawBand(redPixelCount,    orangePixelCount, 255, 128,   0); // orange
+    drawBand(0,                redPixelCount,    255,   0,   0); // red
+
+    OutputCanvasAsPngFile(canvas, "moon-" + std::to_string(trialNumber) + ".png");
+}
+
+// ---- Main --------------------------------------------------------------------
+
+int main() {
+    if (!LoadHeightmapFromTifImage()) return 1;
+    AnalyzeHeightmap();
+    ReadTrafficFromFile();
+    int trialNumber = 1;
+    while (true) {
+        FloodfillStartingFromRandomPixel(trialNumber);
+        WriteTrafficToFile();
+        trialNumber++;
+    }
+}

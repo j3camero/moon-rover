@@ -139,3 +139,6 @@ dist
 # Ignore expected output files.
 *.png
 traffic*.csv
+
+# Compiled exectuable files.
+theta
