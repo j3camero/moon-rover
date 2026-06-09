@@ -174,7 +174,6 @@ static int PixelIndex(int x, int y)      { return W * y + x; }
 // ---- Heightmap ---------------------------------------------------------------
 
 bool LoadHeightmapFromTifImage() {
-    std::cout << "Loading heightmap" << std::endl;
     TIFF* tif = TIFFOpen("ldem_4_uint.tif", "r");
     if (!tif) {
         std::cerr << "Failed to open tif file" << std::endl;
@@ -189,7 +188,6 @@ bool LoadHeightmapFromTifImage() {
     for (int row = 0; row < H; row++)
         TIFFReadScanline(tif, &g_heightmapData[row * W], row);
     TIFFClose(tif);
-    std::cout << "Heightmap loaded\n" << W << " x " << H << " = " << N << " pixels" << std::endl;
     return true;
 }
 
@@ -202,7 +200,6 @@ static double GetElevationOfPixel(int x, int y) {
 }
 
 void AnalyzeHeightmap() {
-    std::cout << "Analyzing heightmap." << std::endl;
     for (int x = 0; x < W; x++)
         for (int y = 0; y < H; y++) {
             double e = GetElevationOfPixel(x, y);
