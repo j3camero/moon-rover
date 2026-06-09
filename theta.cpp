@@ -424,7 +424,7 @@ struct PQNode {
     bool operator>(const PQNode& o) const { return f > o.f; }
 };
 
-static void FloodfillStartingFromRandomPixel(int trialNumber) {
+static void FloodfillStartingFromRandomPixel() {
     std::cout << "." << std::flush;
 
     auto [centerX, centerY] = ChooseBlueNoisePixel();
@@ -569,7 +569,6 @@ void ApproximateAllPaths(int numTrials) {
     std::mutex cv_mutex;
     std::condition_variable cv;
     int active_count = 0;
-    int trialNumber = 1;
 
     for (int i = 0; i < numTrials; i++) {
         {
@@ -577,9 +576,8 @@ void ApproximateAllPaths(int numTrials) {
             cv.wait(lock, [&]{ return active_count < MAX_THREADS; });
             active_count++;
         }
-        int trial = trialNumber++;
-        std::thread([trial, &active_count, &cv_mutex, &cv]() {
-            FloodfillStartingFromRandomPixel(trial);
+        std::thread([&active_count, &cv_mutex, &cv]() {
+            FloodfillStartingFromRandomPixel();
             {
                 std::lock_guard<std::mutex> lock(cv_mutex);
                 active_count--;
