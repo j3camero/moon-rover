@@ -536,6 +536,11 @@ static void OutputTrafficAsPng() {
 // ---- Main --------------------------------------------------------------------
 
 void ApproximateAllPaths(int numTrials) {
+    g_traffic.assign(N, 0.0);
+    g_chosenPixels.clear();
+    g_minElevation = std::numeric_limits<double>::infinity();
+    g_maxElevation = 0.0;
+
     if (!LoadHeightmapFromTifImage()) return;
     AnalyzeHeightmap();
 
