@@ -35,6 +35,10 @@ struct HighTrafficEdge { int i, j; float volume; };
 static std::vector<HighTrafficEdge> g_high_traffic_edges;
 static std::mutex g_highTrafficMutex;
 
+// Paved edges: indexed by i, each entry is (j, reduced_cost). Bidirectional.
+// Persists across ApproximateAllPaths runs — never cleared.
+static std::vector<std::vector<std::pair<int,float>>> g_paved_edges;
+
 static double g_minElevation = std::numeric_limits<double>::infinity();
 static double g_maxElevation = 0.0;
 
@@ -446,6 +450,15 @@ static void FloodfillStartingFromRandomPixel(int trialNumber) {
         tl_closedSet[i] = p;
         verticesInCostOrder.push_back(i);
 
+        for (auto& [j, pavedCost] : g_paved_edges[i]) {
+            if (tl_closedSet[j] != -2) continue;
+            double newCost = f + pavedCost;
+            if (newCost < tl_openSet[j]) {
+                pq.push({newCost, j, i, f});
+                tl_openSet[j] = newCost;
+            }
+        }
+
         for (int j : GetAdjacentPixels(i)) {
             if (tl_closedSet[j] != -2) continue;
 
@@ -499,7 +512,7 @@ static void FloodfillStartingFromRandomPixel(int trialNumber) {
 
 // ---- Output ------------------------------------------------------------------
 
-static void OutputTrafficAsPng() {
+static void OutputTrafficAsPng(int runNumber) {
     std::vector<int> indices(N);
     for (int i = 0; i < N; i++) indices[i] = i;
     std::sort(indices.begin(), indices.end(), [](int a, int b) {
@@ -536,7 +549,7 @@ static void OutputTrafficAsPng() {
     drawBand(redPixelCount,    orangePixelCount, 255, 128,   0);
     drawBand(0,                redPixelCount,    255,   0,   0);
 
-    OutputCanvasAsPngFile(canvas, "moon.png");
+    OutputCanvasAsPngFile(canvas, "moon-" + std::to_string(runNumber) + ".png");
 }
 
 // ---- Main --------------------------------------------------------------------
@@ -549,6 +562,7 @@ void ApproximateAllPaths(int numTrials) {
     g_maxElevation = 0.0;
 
     if (!LoadHeightmapFromTifImage()) return;
+    g_paved_edges.resize(N); // preserve existing paved edges across runs
     AnalyzeHeightmap();
 
     const int MAX_THREADS = 12;
@@ -578,13 +592,43 @@ void ApproximateAllPaths(int numTrials) {
     cv.wait(lock, [&]{ return active_count == 0; });
 }
 
-void SimulateTrafficThenPaveTheBusiestEdges() {
+static bool IsEdgePaved(int i, int j) {
+    for (auto& [jj, cost] : g_paved_edges[i])
+        if (jj == j) return true;
+    return false;
+}
+
+void SimulateTrafficThenPaveTheBusiestEdges(int runNumber) {
     ApproximateAllPaths(100);
-    // TODO: add the single highest traffic edge to a "paved" set.
-    OutputTrafficAsPng();
+
+    // Find the highest-traffic edge not yet paved and add it in both directions.
+    {
+        HighTrafficEdge best = {-1, -1, 0.0f};
+        for (auto& e : g_high_traffic_edges) {
+            if (e.volume > best.volume && !IsEdgePaved(e.i, e.j))
+                best = e;
+        }
+        if (best.i >= 0) {
+            auto regularCost = CalcGreatCircleTravelTimeByIndex(best.i, best.j);
+            if (regularCost) {
+                float pavedCost = (float)(*regularCost * 0.5);
+                g_paved_edges[best.i].push_back({best.j, pavedCost});
+                g_paved_edges[best.j].push_back({best.i, pavedCost});
+                auto [x1, y1] = Deindex(best.i);
+                auto [x2, y2] = Deindex(best.j);
+                std::cout << "Paving (" << x1 << ", " << y1 << ") -> (" << x2 << ", " << y2 << ")" << std::endl;
+            }
+        }
+    }
+
+    OutputTrafficAsPng(runNumber);
 }
 
 int main() {
-    SimulateTrafficThenPaveTheBusiestEdges();
+    int runNumber = 1;
+    while (true) {
+        SimulateTrafficThenPaveTheBusiestEdges(runNumber);
+        runNumber++;
+    }
     return 0;
 }
