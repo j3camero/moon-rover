@@ -39,6 +39,7 @@ static std::mt19937 g_rng(std::random_device{}());
 
 static std::mutex g_blueNoiseMutex;
 static std::mutex g_diskIOMutex;
+static std::optional<std::chrono::steady_clock::time_point> g_lastDiskOutput;
 
 // Per-thread flat arrays for floodfill state; reused across trials.
 // Sentinel for closedSet: -2 = not closed, -1 = closed as root, >=0 = parent index.
@@ -168,7 +169,7 @@ static int PixelIndex(int x, int y)      { return W * y + x; }
 
 bool LoadHeightmapFromTifImage() {
     std::cout << "Loading heightmap" << std::endl;
-    TIFF* tif = TIFFOpen("ldem_16_uint.tif", "r");
+    TIFF* tif = TIFFOpen("ldem_64_uint.tif", "r");
     if (!tif) {
         std::cerr << "Failed to open ldem_16_uint.tif" << std::endl;
         return false;
@@ -547,12 +548,13 @@ static void FloodfillStartingFromRandomPixel(int trialNumber) {
         }
     }
 
-    if (trialNumber % 100 != 0) {
-        std::cout << "Skipping disk output." << std::endl;
+    std::lock_guard<std::mutex> diskLock(g_diskIOMutex);
+    auto now = std::chrono::steady_clock::now();
+    if (g_lastDiskOutput && (now - *g_lastDiskOutput) < std::chrono::minutes(10)) {
+        std::cout << "Skipping disk output (cooldown)." << std::endl;
         return;
     }
-
-    std::lock_guard<std::mutex> diskLock(g_diskIOMutex);
+    g_lastDiskOutput = now;
     WriteTrafficToFile();
     std::cout << "Sorting vertices." << std::endl;
     std::sort(verticesInCostOrder.begin(), verticesInCostOrder.end(), [](int a, int b) {
