@@ -132,6 +132,7 @@ dist
 # Ignore temporary files
 *~
 *.Identifier
+.DS_Store
 
 # Ignore large image data files that hold heightmap data
 *.tif

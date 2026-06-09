@@ -3,16 +3,20 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <condition_variable>
 #include <cstdint>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
 #include <limits>
+#include <mutex>
 #include <optional>
 #include <queue>
 #include <random>
+#include <shared_mutex>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -24,16 +28,23 @@ static const double kMoonRadius = 1727400.0;
 static std::vector<uint16_t> g_heightmapData;
 static int W = 0, H = 0, N = 0;
 
-static std::unordered_map<int, double> g_traffic;
+static std::vector<double> g_traffic;
 static std::vector<std::pair<int,int>> g_chosenPixels;
 
 static double g_minElevation = std::numeric_limits<double>::infinity();
 static double g_maxElevation = 0.0;
 
-// g_highTrafficEdgeCache[i][j] = great-circle travel cost i→j
-static std::unordered_map<int, std::unordered_map<int,double>> g_highTrafficEdgeCache;
 
 static std::mt19937 g_rng(std::random_device{}());
+
+static std::mutex g_blueNoiseMutex;
+static std::mutex g_diskIOMutex;
+
+// Per-thread flat arrays for floodfill state; reused across trials.
+// Sentinel for closedSet: -2 = not closed, -1 = closed as root, >=0 = parent index.
+thread_local std::vector<int>    tl_closedSet;
+thread_local std::vector<double> tl_openSet;
+thread_local std::vector<double> tl_catchment;
 
 // ---- Canvas ------------------------------------------------------------------
 
@@ -167,6 +178,7 @@ bool LoadHeightmapFromTifImage() {
     TIFFGetField(tif, TIFFTAG_IMAGELENGTH, &h);
     W = (int)w; H = (int)h; N = W * H;
     g_heightmapData.resize(N);
+    g_traffic.assign(N, 0.0);
     for (int row = 0; row < H; row++)
         TIFFReadScanline(tif, &g_heightmapData[row * W], row);
     TIFFClose(tif);
@@ -338,23 +350,6 @@ static void RecordTrafficInGreatCircle(int i, int j, double volume) {
         g_traffic[k] += v * volume;
 }
 
-static void RecordHighTrafficEdge(int i, int j, double trafficVolume) {
-    if (trafficVolume < 10000.0) return;
-    auto [x1,y1] = Deindex(i);
-    auto [x2,y2] = Deindex(j);
-    if (x1 == x2 && std::abs(y2 - y1) == 1) return;
-    if (y1 == y2 && std::abs(x2 - x1) == 1) return;
-    auto cost = CalcGreatCircleTravelTimeByIndex(i, j);
-    if (!cost) return;
-    g_highTrafficEdgeCache[i][j] = *cost;
-    g_highTrafficEdgeCache[j][i] = *cost;
-}
-
-static const std::unordered_map<int,double>& GetHighTrafficEdges(int i) {
-    static const std::unordered_map<int,double> empty;
-    auto it = g_highTrafficEdgeCache.find(i);
-    return it != g_highTrafficEdgeCache.end() ? it->second : empty;
-}
 
 // ---- Random pixel selection --------------------------------------------------
 
@@ -368,6 +363,7 @@ static std::pair<int,int> ChooseRandomPixel() {
 }
 
 static std::pair<int,int> ChooseBlueNoisePixel() {
+    std::lock_guard<std::mutex> lock(g_blueNoiseMutex);
     std::cout << "Choosing random pixel with blue noise." << std::endl;
     std::pair<int,int> best = {0, 0};
     double maxMinAngle = 0.0;
@@ -408,10 +404,8 @@ static std::vector<int> GetAdjacentPixels(int i) {
 static void WriteTrafficToFile() {
     std::cout << "Writing traffic to file." << std::endl;
     std::ofstream f("traffic.csv");
-    for (int i = 0; i < N; i++) {
-        auto it = g_traffic.find(i);
-        f << (it != g_traffic.end() ? it->second : 0.0) << "\n";
-    }
+    for (int i = 0; i < N; i++)
+        f << g_traffic[i] << "\n";
     std::cout << "Successfully wrote traffic to file." << std::endl;
 }
 
@@ -427,7 +421,7 @@ static void ReadTrafficFromFile() {
     while (std::getline(f, line)) {
         try {
             double t = std::stod(line);
-            if (t > 0.0) g_traffic[lineCount] = t;
+            if (t > 0.0 && lineCount < N) g_traffic[lineCount] = t;
         } catch (...) {
             std::cout << "Parse error: " << line << std::endl;
         }
@@ -460,18 +454,17 @@ static void FloodfillStartingFromRandomPixel(int trialNumber) {
     std::cout << "Trial " << trialNumber << std::endl;
     auto startTime = std::chrono::steady_clock::now();
 
-    std::cout << "Pixels with cached high traffic paths: "
-              << g_highTrafficEdgeCache.size() << std::endl;
-
     auto [centerX, centerY] = ChooseBlueNoisePixel();
     std::cout << "Floodfill starting from pixel " << centerX << " " << centerY << std::endl;
     int centerIndex = PixelIndex(centerX, centerY);
 
+    tl_closedSet.assign(N, -2);
+    tl_openSet.assign(N, std::numeric_limits<double>::infinity());
+
     std::priority_queue<PQNode, std::vector<PQNode>, std::greater<PQNode>> pq;
     pq.push({0.0, centerIndex, -1, 0.0});
+    tl_openSet[centerIndex] = 0.0;
 
-    std::unordered_map<int, double> openSet;
-    std::unordered_map<int, int>    closedSet; // value = parent index, -1 for root
     std::vector<int> verticesInCostOrder;
 
     int progressCount      = 0;
@@ -484,10 +477,9 @@ static void FloodfillStartingFromRandomPixel(int trialNumber) {
         int    p  = node.p;
         double fp = node.fp;
 
-        if (closedSet.count(i)) continue;
-        closedSet[i] = p;
+        if (tl_closedSet[i] != -2) continue;
+        tl_closedSet[i] = p;
         verticesInCostOrder.push_back(i);
-        openSet.erase(i);
 
         progressCount++;
         double pct = 100.0 * progressCount / N;
@@ -497,18 +489,16 @@ static void FloodfillStartingFromRandomPixel(int trialNumber) {
         }
 
         for (int j : GetAdjacentPixels(i)) {
-            if (closedSet.count(j)) continue;
+            if (tl_closedSet[j] != -2) continue;
 
             // Theta* shortcut: try going from parent p directly to j
             if (p >= 0) {
                 auto ds = CalcGreatCircleTravelTimeByIndex(p, j);
                 if (ds) {
                     double newCost = fp + *ds;
-                    double lowest  = openSet.count(j) ? openSet[j]
-                                                      : std::numeric_limits<double>::infinity();
-                    if (newCost < lowest) {
+                    if (newCost < tl_openSet[j]) {
                         pq.push({newCost, j, p, fp});
-                        openSet[j] = newCost;
+                        tl_openSet[j] = newCost;
                     }
                 }
             }
@@ -517,26 +507,14 @@ static void FloodfillStartingFromRandomPixel(int trialNumber) {
             auto dt = CalcGreatCircleTravelTimeByIndex(i, j);
             if (dt) {
                 double newCost = f + *dt;
-                double lowest  = openSet.count(j) ? openSet[j]
-                                                  : std::numeric_limits<double>::infinity();
-                if (newCost < lowest) {
+                if (newCost < tl_openSet[j]) {
                     pq.push({newCost, j, i, f});
-                    openSet[j] = newCost;
+                    tl_openSet[j] = newCost;
                 }
             }
         }
 
-        // High-traffic edge shortcuts
-        for (auto& [j, dt] : GetHighTrafficEdges(i)) {
-            if (closedSet.count(j)) continue;
-            double newCost = f + dt;
-            double lowest  = openSet.count(j) ? openSet[j]
-                                              : std::numeric_limits<double>::infinity();
-            if (newCost < lowest) {
-                pq.push({newCost, j, i, f});
-                openSet[j] = newCost;
-            }
-        }
+
     }
 
     auto endTime       = std::chrono::steady_clock::now();
@@ -551,7 +529,7 @@ static void FloodfillStartingFromRandomPixel(int trialNumber) {
     }
 
     std::cout << "Floodfill done. Tracing paths." << std::endl;
-    std::unordered_map<int, double> catchment;
+    tl_catchment.assign(N, 0.0);
 
     for (int k = (int)verticesInCostOrder.size() - 1; k >= 0; k--) {
         int i      = verticesInCostOrder[k];
@@ -559,30 +537,26 @@ static void FloodfillStartingFromRandomPixel(int trialNumber) {
         double latP   = 1.0 - (y + 0.5) / H;
         double latRad = M_PI * latP;
         double area   = std::sin(latRad);
-        double cat    = (catchment.count(i) ? catchment[i] : 0.0) + area;
-        catchment.erase(i);
+        double cat    = tl_catchment[i] + area;
 
-        int par = closedSet[i];
+        int par = tl_closedSet[i];
         if (par >= 0) {
-            catchment[par] += cat;
-            if (cat > 100.0) {
+            tl_catchment[par] += cat;
+            if (cat > 100.0)
                 RecordTrafficInGreatCircle(i, par, cat);
-                RecordHighTrafficEdge(i, par, cat);
-            }
         }
     }
 
-    if (((trialNumber % 10) > 0) && (trialNumber > 40)) {
-        std::cout << "Skipping render stage." << std::endl;
+    if (trialNumber % 100 != 0) {
+        std::cout << "Skipping disk output." << std::endl;
         return;
     }
 
-    std::cout << "Sorting vertices. " << g_traffic.size() << std::endl;
+    std::lock_guard<std::mutex> diskLock(g_diskIOMutex);
+    WriteTrafficToFile();
+    std::cout << "Sorting vertices." << std::endl;
     std::sort(verticesInCostOrder.begin(), verticesInCostOrder.end(), [](int a, int b) {
-        auto ia = g_traffic.find(a), ib = g_traffic.find(b);
-        double ta = (ia != g_traffic.end()) ? ia->second : 0.0;
-        double tb = (ib != g_traffic.end()) ? ib->second : 0.0;
-        return ta > tb;
+        return g_traffic[a] > g_traffic[b];
     });
 
     std::cout << "Drawing canvas." << std::endl;
@@ -600,10 +574,8 @@ static void FloodfillStartingFromRandomPixel(int trialNumber) {
     int orangePixelCount = 2 * W;
     int yellowPixelCount = 15 * W;
     double denom = 1.0;
-    if (!verticesInCostOrder.empty()) {
-        auto it = g_traffic.find(verticesInCostOrder[0]);
-        if (it != g_traffic.end()) denom = it->second;
-    }
+    if (!verticesInCostOrder.empty())
+        denom = g_traffic[verticesInCostOrder[0]];
     const double maxLineWidth = 18.0;
     int vSize = (int)verticesInCostOrder.size();
 
@@ -611,8 +583,7 @@ static void FloodfillStartingFromRandomPixel(int trialNumber) {
         for (int k = from; k < to && k < vSize; k++) {
             int i = verticesInCostOrder[k];
             auto [x, y] = Deindex(i);
-            auto it = g_traffic.find(i);
-            double t = (it != g_traffic.end()) ? it->second : 0.0;
+            double t = g_traffic[i];
             DrawTrafficInPixel(canvas, x, y, maxLineWidth * t / denom, r, g, b);
         }
     };
@@ -631,10 +602,27 @@ int main() {
     if (!LoadHeightmapFromTifImage()) return 1;
     AnalyzeHeightmap();
     ReadTrafficFromFile();
+
+    const int MAX_THREADS = 12;
+    std::mutex cv_mutex;
+    std::condition_variable cv;
+    int active_count = 0;
     int trialNumber = 1;
+
     while (true) {
-        FloodfillStartingFromRandomPixel(trialNumber);
-        WriteTrafficToFile();
-        trialNumber++;
+        {
+            std::unique_lock<std::mutex> lock(cv_mutex);
+            cv.wait(lock, [&]{ return active_count < MAX_THREADS; });
+            active_count++;
+        }
+        int trial = trialNumber++;
+        std::thread([trial, &active_count, &cv_mutex, &cv]() {
+            FloodfillStartingFromRandomPixel(trial);
+            {
+                std::lock_guard<std::mutex> lock(cv_mutex);
+                active_count--;
+            }
+            cv.notify_one();
+        }).detach();
     }
 }
