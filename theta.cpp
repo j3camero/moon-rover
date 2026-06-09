@@ -607,7 +607,7 @@ void SimulateTrafficThenPaveTheBusiestEdges(int runNumber) {
 
         int paved = 0;
         for (auto& e : sorted) {
-            if (paved >= 10) break;
+            if (paved >= 50) break;
             if (IsEdgePaved(e.i, e.j)) continue;
             auto regularCost = CalcGreatCircleTravelTimeByIndex(e.i, e.j);
             if (!regularCost) continue;
