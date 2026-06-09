@@ -31,6 +31,10 @@ static int W = 0, H = 0, N = 0;
 static std::vector<double> g_traffic;
 static std::vector<std::pair<int,int>> g_chosenPixels;
 
+struct HighTrafficEdge { int i, j; float volume; };
+static std::vector<HighTrafficEdge> g_high_traffic_edges;
+static std::mutex g_highTrafficMutex;
+
 static double g_minElevation = std::numeric_limits<double>::infinity();
 static double g_maxElevation = 0.0;
 
@@ -344,6 +348,8 @@ static PathMap CalcGreatCirclePixelPathByIndex(int i, int j) {
 
 static void RecordTrafficInGreatCircle(int i, int j, double volume) {
     if (i < 0 || j < 0) return;
+    std::lock_guard<std::mutex> lock(g_highTrafficMutex);
+    g_high_traffic_edges.push_back({i, j, (float)volume});
     PathMap path = CalcGreatCirclePixelPathByIndex(i, j);
     for (auto& [k, v] : path)
         g_traffic[k] += v * volume;
@@ -537,6 +543,7 @@ static void OutputTrafficAsPng() {
 
 void ApproximateAllPaths(int numTrials) {
     g_traffic.assign(N, 0.0);
+    g_high_traffic_edges.clear();
     g_chosenPixels.clear();
     g_minElevation = std::numeric_limits<double>::infinity();
     g_maxElevation = 0.0;
@@ -571,8 +578,13 @@ void ApproximateAllPaths(int numTrials) {
     cv.wait(lock, [&]{ return active_count == 0; });
 }
 
-int main() {
+void SimulateTrafficThenPaveTheBusiestEdges() {
     ApproximateAllPaths(100);
+    // TODO: add the single highest traffic edge to a "paved" set.
     OutputTrafficAsPng();
+}
+
+int main() {
+    SimulateTrafficThenPaveTheBusiestEdges();
     return 0;
 }
