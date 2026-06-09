@@ -597,23 +597,27 @@ static bool IsEdgePaved(int i, int j) {
 void SimulateTrafficThenPaveTheBusiestEdges(int runNumber) {
     ApproximateAllPaths(100);
 
-    // Find the highest-traffic edge not yet paved and add it in both directions.
+    // Find the top 10 highest-traffic edges not yet paved and pave them.
     {
-        HighTrafficEdge best = {-1, -1, 0.0f};
-        for (auto& e : g_high_traffic_edges) {
-            if (e.volume > best.volume && !IsEdgePaved(e.i, e.j))
-                best = e;
-        }
-        if (best.i >= 0) {
-            auto regularCost = CalcGreatCircleTravelTimeByIndex(best.i, best.j);
-            if (regularCost) {
-                float pavedCost = (float)(*regularCost * 0.5);
-                g_paved_edges[best.i].push_back({best.j, pavedCost});
-                g_paved_edges[best.j].push_back({best.i, pavedCost});
-                auto [x1, y1] = Deindex(best.i);
-                auto [x2, y2] = Deindex(best.j);
-                std::cout << "Paving (" << x1 << ", " << y1 << ") -> (" << x2 << ", " << y2 << ")" << std::endl;
-            }
+        // Sort descending by volume.
+        std::vector<HighTrafficEdge> sorted = g_high_traffic_edges;
+        std::sort(sorted.begin(), sorted.end(), [](const HighTrafficEdge& a, const HighTrafficEdge& b) {
+            return a.volume > b.volume;
+        });
+
+        int paved = 0;
+        for (auto& e : sorted) {
+            if (paved >= 10) break;
+            if (IsEdgePaved(e.i, e.j)) continue;
+            auto regularCost = CalcGreatCircleTravelTimeByIndex(e.i, e.j);
+            if (!regularCost) continue;
+            float pavedCost = (float)(*regularCost * 0.5);
+            g_paved_edges[e.i].push_back({e.j, pavedCost});
+            g_paved_edges[e.j].push_back({e.i, pavedCost});
+            auto [x1, y1] = Deindex(e.i);
+            auto [x2, y2] = Deindex(e.j);
+            std::cout << "Paving (" << x1 << ", " << y1 << ") -> (" << x2 << ", " << y2 << ")" << std::endl;
+            paved++;
         }
     }
 
