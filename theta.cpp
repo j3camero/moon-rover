@@ -28,11 +28,10 @@ static const double kMoonRadius = 1727400.0;
 static std::vector<uint16_t> g_heightmapData;
 static int W = 0, H = 0, N = 0;
 
-static std::vector<double> g_traffic;
 static std::vector<std::pair<int,int>> g_chosenPixels;
 
-struct HighTrafficEdge { int i, j; float volume; };
-static std::vector<HighTrafficEdge> g_high_traffic_edges;
+// Indexed by min(i,j); each entry is (max(i,j), cumulative_volume). Accumulated across all trials in a run.
+static std::vector<std::vector<std::pair<int,float>>> g_high_traffic_edges;
 static std::mutex g_highTrafficMutex;
 
 // Paved edges: indexed by i, each entry is (j, reduced_cost). Bidirectional.
@@ -184,7 +183,6 @@ bool LoadHeightmapFromTifImage() {
     TIFFGetField(tif, TIFFTAG_IMAGELENGTH, &h);
     W = (int)w; H = (int)h; N = W * H;
     g_heightmapData.resize(N);
-    g_traffic.assign(N, 0.0);
     for (int row = 0; row < H; row++)
         TIFFReadScanline(tif, &g_heightmapData[row * W], row);
     TIFFClose(tif);
@@ -349,11 +347,12 @@ static PathMap CalcGreatCirclePixelPathByIndex(int i, int j) {
 
 static void RecordTrafficInGreatCircle(int i, int j, double volume) {
     if (i < 0 || j < 0) return;
+    int a = std::min(i, j), b = std::max(i, j);
     std::lock_guard<std::mutex> lock(g_highTrafficMutex);
-    g_high_traffic_edges.push_back({i, j, (float)volume});
-    PathMap path = CalcGreatCirclePixelPathByIndex(i, j);
-    for (auto& [k, v] : path)
-        g_traffic[k] += v * volume;
+    for (auto& [jj, vol] : g_high_traffic_edges[a]) {
+        if (jj == b) { vol += (float)volume; return; }
+    }
+    g_high_traffic_edges[a].push_back({b, (float)volume});
 }
 
 
@@ -399,17 +398,6 @@ static std::vector<int> GetAdjacentPixels(int i) {
         if (ny >= 0 && ny < H) adj.push_back(PixelIndex(nx, ny));
     }
     return adj;
-}
-
-// ---- Canvas drawing ----------------------------------------------------------
-
-static void DrawTrafficInPixel(Canvas& ctx, int x, int y, double lineWidth,
-                               uint8_t r, uint8_t g, uint8_t b) {
-    if (lineWidth > 1.0) {
-        ctx.fillCircle(x + 0.5, y + 0.5, 0.5 * lineWidth, r, g, b);
-    } else {
-        ctx.blendPixelRGBA(x, y, r, g, b, lineWidth);
-    }
 }
 
 // ---- Theta* floodfill --------------------------------------------------------
@@ -509,13 +497,13 @@ static void FloodfillStartingFromRandomPixel() {
 
 // ---- Output ------------------------------------------------------------------
 
-static void OutputTrafficAsPng(int runNumber) {
-    std::vector<int> indices(N);
-    for (int i = 0; i < N; i++) indices[i] = i;
-    std::sort(indices.begin(), indices.end(), [](int a, int b) {
-        return g_traffic[a] > g_traffic[b];
-    });
+static bool IsEdgePaved(int i, int j) {
+    for (auto& [jj, cost] : g_paved_edges[i])
+        if (jj == j) return true;
+    return false;
+}
 
+static void OutputTrafficAsPng(int runNumber) {
     Canvas canvas(W, H);
     double elevRange = g_maxElevation - g_minElevation;
     for (int i = 0; i < N; i++) {
@@ -525,26 +513,61 @@ static void OutputTrafficAsPng(int runNumber) {
         canvas.setPixelRGB(x, y, v, v, v);
     }
 
-    int redPixelCount    = W / 4;
-    int orangePixelCount = 2 * W;
-    int yellowPixelCount = 15 * W;
-    double denom = (!indices.empty() && g_traffic[indices[0]] > 0.0)
-                   ? g_traffic[indices[0]] : 1.0;
-    const double maxLineWidth = 8.0;
-    int vSize = (int)indices.size();
-
-    auto drawBand = [&](int from, int to, uint8_t r, uint8_t g, uint8_t b) {
-        for (int k = from; k < to && k < vSize; k++) {
-            int i = indices[k];
-            auto [x, y] = Deindex(i);
-            DrawTrafficInPixel(canvas, x, y, maxLineWidth * g_traffic[i] / denom, r, g, b);
+    std::unordered_map<long long, float> edgeVolume;
+    float maxVolume = 0.0f;
+    for (int a = 0; a < N; a++) {
+        for (auto& [b, vol] : g_high_traffic_edges[a]) {
+            long long key = (long long)a * N + b;
+            edgeVolume[key] = vol;
+            if (vol > maxVolume) maxVolume = vol;
         }
-    };
+    }
 
-    drawBand(yellowPixelCount, vSize,           148, 245,  44);
-    drawBand(orangePixelCount, yellowPixelCount, 255, 255,   0);
-    drawBand(redPixelCount,    orangePixelCount, 255, 128,   0);
-    drawBand(0,                redPixelCount,    255,   0,   0);
+    if (maxVolume > 0.0f) {
+        const double maxLineWidth = 8.0;
+
+        // Non-paved edges: transparent green arcs, alpha proportional to volume
+        for (auto& [key, vol] : edgeVolume) {
+            int a = (int)(key / N), b = (int)(key % N);
+            if (IsEdgePaved(a, b)) continue;
+            double alpha = (double)vol / maxVolume;
+            PathMap path = CalcGreatCirclePixelPathByIndex(a, b);
+            for (auto& [k, dist] : path) {
+                auto [px, py] = Deindex(k);
+                canvas.blendPixelRGBA(px, py, 148, 245, 44, alpha);
+            }
+        }
+
+        // Paved edges: red arcs with circle width proportional to traffic volume
+        float maxPavedVol = 1.0f;
+        for (int i = 0; i < N; i++) {
+            for (auto& [j, cost] : g_paved_edges[i]) {
+                if (j <= i) continue;
+                long long key = (long long)i * N + j;
+                auto it = edgeVolume.find(key);
+                if (it != edgeVolume.end() && it->second > maxPavedVol)
+                    maxPavedVol = it->second;
+            }
+        }
+
+        for (int i = 0; i < N; i++) {
+            for (auto& [j, cost] : g_paved_edges[i]) {
+                if (j <= i) continue;
+                long long key = (long long)i * N + j;
+                auto it = edgeVolume.find(key);
+                double vol = (it != edgeVolume.end()) ? (double)it->second : 0.0;
+                double lineWidth = std::max(1.0, maxLineWidth * vol / maxPavedVol);
+                PathMap path = CalcGreatCirclePixelPathByIndex(i, j);
+                for (auto& [k, dist] : path) {
+                    auto [px, py] = Deindex(k);
+                    if (lineWidth > 1.0)
+                        canvas.fillCircle(px + 0.5, py + 0.5, 0.5 * lineWidth, 255, 0, 0);
+                    else
+                        canvas.blendPixelRGBA(px, py, 255, 0, 0, lineWidth);
+                }
+            }
+        }
+    }
 
     OutputCanvasAsPngFile(canvas, "moon-" + std::to_string(runNumber) + ".png");
 }
@@ -552,14 +575,13 @@ static void OutputTrafficAsPng(int runNumber) {
 // ---- Main --------------------------------------------------------------------
 
 void ApproximateAllPaths(int numTrials) {
-    g_traffic.assign(N, 0.0);
-    g_high_traffic_edges.clear();
     g_chosenPixels.clear();
     g_minElevation = std::numeric_limits<double>::infinity();
     g_maxElevation = 0.0;
 
     if (!LoadHeightmapFromTifImage()) return;
     g_paved_edges.resize(N); // preserve existing paved edges across runs
+    g_high_traffic_edges.assign(N, {});
     AnalyzeHeightmap();
 
     const int MAX_THREADS = 12;
@@ -588,30 +610,27 @@ void ApproximateAllPaths(int numTrials) {
     std::cout << "\n";
 }
 
-static bool IsEdgePaved(int i, int j) {
-    for (auto& [jj, cost] : g_paved_edges[i])
-        if (jj == j) return true;
-    return false;
-}
-
 void SimulateTrafficThenPaveTheBusiestEdges(int runNumber) {
     ApproximateAllPaths(100);
 
-    // Find the top 10 highest-traffic edges not yet paved and pave them.
+    // Flatten the accumulated traffic, sort descending by total volume, pave the top 100.
     {
-        // Sort descending by volume.
-        std::vector<HighTrafficEdge> sorted = g_high_traffic_edges;
-        std::sort(sorted.begin(), sorted.end(), [](const HighTrafficEdge& a, const HighTrafficEdge& b) {
+        struct EdgeEntry { int i, j; float volume; };
+        std::vector<EdgeEntry> sorted;
+        for (int a = 0; a < N; a++)
+            for (auto& [b, vol] : g_high_traffic_edges[a])
+                sorted.push_back({a, b, vol});
+        std::sort(sorted.begin(), sorted.end(), [](const EdgeEntry& a, const EdgeEntry& b) {
             return a.volume > b.volume;
         });
 
         int paved = 0;
         for (auto& e : sorted) {
-            if (paved >= 50) break;
+            if (paved >= 100) break;
             if (IsEdgePaved(e.i, e.j)) continue;
             auto regularCost = CalcGreatCircleTravelTimeByIndex(e.i, e.j);
             if (!regularCost) continue;
-            float pavedCost = (float)(*regularCost * 0.5);
+            float pavedCost = (float)(*regularCost * 0.7);
             g_paved_edges[e.i].push_back({e.j, pavedCost});
             g_paved_edges[e.j].push_back({e.i, pavedCost});
             auto [x1, y1] = Deindex(e.i);
