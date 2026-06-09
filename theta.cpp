@@ -38,8 +38,6 @@ static double g_maxElevation = 0.0;
 static std::mt19937 g_rng(std::random_device{}());
 
 static std::mutex g_blueNoiseMutex;
-static std::mutex g_diskIOMutex;
-static std::optional<std::chrono::steady_clock::time_point> g_lastDiskOutput;
 
 // Per-thread flat arrays for floodfill state; reused across trials.
 // Sentinel for closedSet: -2 = not closed, -1 = closed as root, >=0 = parent index.
@@ -152,7 +150,7 @@ static Vec2 UnitSphere3DToPixel2D(double x, double y, double z) {
     double longP = longRad / (2.0 * M_PI) + 0.5;
     if (longP > 1.0) longP -= 1.0;
     double latP = latRad / M_PI;
-    return {longP * W, (1.0 - latP) * H - 0.5};
+    return {longP * W, std::max(0.0, (1.0 - latP) * H - 0.5)};
 }
 
 static Vec3 Normalize3D(double x, double y, double z) {
@@ -169,9 +167,9 @@ static int PixelIndex(int x, int y)      { return W * y + x; }
 
 bool LoadHeightmapFromTifImage() {
     std::cout << "Loading heightmap" << std::endl;
-    TIFF* tif = TIFFOpen("ldem_64_uint.tif", "r");
+    TIFF* tif = TIFFOpen("ldem_4_uint.tif", "r");
     if (!tif) {
-        std::cerr << "Failed to open ldem_16_uint.tif" << std::endl;
+        std::cerr << "Failed to open tif file" << std::endl;
         return false;
     }
     uint32_t w, h;
@@ -365,7 +363,6 @@ static std::pair<int,int> ChooseRandomPixel() {
 
 static std::pair<int,int> ChooseBlueNoisePixel() {
     std::lock_guard<std::mutex> lock(g_blueNoiseMutex);
-    std::cout << "Choosing random pixel with blue noise." << std::endl;
     std::pair<int,int> best = {0, 0};
     double maxMinAngle = 0.0;
     for (int attempt = 0; attempt < 1000; attempt++) {
@@ -381,9 +378,6 @@ static std::pair<int,int> ChooseBlueNoisePixel() {
         if (minAngle > maxMinAngle) { maxMinAngle = minAngle; best = {ax, ay}; }
     }
     g_chosenPixels.push_back(best);
-    std::cout << "Chose random pixel (" << best.first << ", " << best.second
-              << ") located " << std::fixed << std::setprecision(2) << maxMinAngle
-              << " degrees away from nearest seed point." << std::endl;
     return best;
 }
 
@@ -398,37 +392,6 @@ static std::vector<int> GetAdjacentPixels(int i) {
         if (ny >= 0 && ny < H) adj.push_back(PixelIndex(nx, ny));
     }
     return adj;
-}
-
-// ---- Traffic file I/O --------------------------------------------------------
-
-static void WriteTrafficToFile() {
-    std::cout << "Writing traffic to file." << std::endl;
-    std::ofstream f("traffic.csv");
-    for (int i = 0; i < N; i++)
-        f << g_traffic[i] << "\n";
-    std::cout << "Successfully wrote traffic to file." << std::endl;
-}
-
-static void ReadTrafficFromFile() {
-    std::ifstream f("traffic.csv");
-    if (!f.is_open()) {
-        std::cout << "No saved traffic file found. Starting fresh." << std::endl;
-        return;
-    }
-    std::cout << "Reading traffic from file." << std::endl;
-    std::string line;
-    int lineCount = 0;
-    while (std::getline(f, line)) {
-        try {
-            double t = std::stod(line);
-            if (t > 0.0 && lineCount < N) g_traffic[lineCount] = t;
-        } catch (...) {
-            std::cout << "Parse error: " << line << std::endl;
-        }
-        lineCount++;
-    }
-    std::cout << "Successfully read traffic from file. lineCount: " << lineCount << std::endl;
 }
 
 // ---- Canvas drawing ----------------------------------------------------------
@@ -453,10 +416,8 @@ struct PQNode {
 
 static void FloodfillStartingFromRandomPixel(int trialNumber) {
     std::cout << "Trial " << trialNumber << std::endl;
-    auto startTime = std::chrono::steady_clock::now();
 
     auto [centerX, centerY] = ChooseBlueNoisePixel();
-    std::cout << "Floodfill starting from pixel " << centerX << " " << centerY << std::endl;
     int centerIndex = PixelIndex(centerX, centerY);
 
     tl_closedSet.assign(N, -2);
@@ -468,9 +429,6 @@ static void FloodfillStartingFromRandomPixel(int trialNumber) {
 
     std::vector<int> verticesInCostOrder;
 
-    int progressCount      = 0;
-    int nextPercentToReport = 0;
-
     while (!pq.empty()) {
         PQNode node = pq.top(); pq.pop();
         int    i  = node.i;
@@ -481,13 +439,6 @@ static void FloodfillStartingFromRandomPixel(int trialNumber) {
         if (tl_closedSet[i] != -2) continue;
         tl_closedSet[i] = p;
         verticesInCostOrder.push_back(i);
-
-        progressCount++;
-        double pct = 100.0 * progressCount / N;
-        if (pct > nextPercentToReport) {
-            std::cout << "Trial " << trialNumber << " - " << nextPercentToReport << " %" << std::endl;
-            nextPercentToReport += 10;
-        }
 
         for (int j : GetAdjacentPixels(i)) {
             if (tl_closedSet[j] != -2) continue;
@@ -518,18 +469,8 @@ static void FloodfillStartingFromRandomPixel(int trialNumber) {
 
     }
 
-    auto endTime       = std::chrono::steady_clock::now();
-    int  elapsedSeconds = (int)std::chrono::duration_cast<std::chrono::seconds>(
-                              endTime - startTime).count();
-    std::cout << "Floodfilled " << verticesInCostOrder.size()
-              << " pixels in " << elapsedSeconds << " seconds." << std::endl;
+    if ((int)verticesInCostOrder.size() < N / 2) return;
 
-    if ((int)verticesInCostOrder.size() < N / 2) {
-        std::cout << "Floodfilled minority component." << std::endl;
-        return;
-    }
-
-    std::cout << "Floodfill done. Tracing paths." << std::endl;
     tl_catchment.assign(N, 0.0);
 
     for (int k = (int)verticesInCostOrder.size() - 1; k >= 0; k--) {
@@ -548,20 +489,17 @@ static void FloodfillStartingFromRandomPixel(int trialNumber) {
         }
     }
 
-    std::lock_guard<std::mutex> diskLock(g_diskIOMutex);
-    auto now = std::chrono::steady_clock::now();
-    if (g_lastDiskOutput && (now - *g_lastDiskOutput) < std::chrono::minutes(10)) {
-        std::cout << "Skipping disk output (cooldown)." << std::endl;
-        return;
-    }
-    g_lastDiskOutput = now;
-    WriteTrafficToFile();
-    std::cout << "Sorting vertices." << std::endl;
-    std::sort(verticesInCostOrder.begin(), verticesInCostOrder.end(), [](int a, int b) {
+}
+
+// ---- Output ------------------------------------------------------------------
+
+static void OutputTrafficAsPng() {
+    std::vector<int> indices(N);
+    for (int i = 0; i < N; i++) indices[i] = i;
+    std::sort(indices.begin(), indices.end(), [](int a, int b) {
         return g_traffic[a] > g_traffic[b];
     });
 
-    std::cout << "Drawing canvas." << std::endl;
     Canvas canvas(W, H);
     double elevRange = g_maxElevation - g_minElevation;
     for (int i = 0; i < N; i++) {
@@ -571,39 +509,35 @@ static void FloodfillStartingFromRandomPixel(int trialNumber) {
         canvas.setPixelRGB(x, y, v, v, v);
     }
 
-    std::cout << "Marking top vertices with color." << std::endl;
     int redPixelCount    = W / 4;
     int orangePixelCount = 2 * W;
     int yellowPixelCount = 15 * W;
-    double denom = 1.0;
-    if (!verticesInCostOrder.empty())
-        denom = g_traffic[verticesInCostOrder[0]];
-    const double maxLineWidth = 18.0;
-    int vSize = (int)verticesInCostOrder.size();
+    double denom = (!indices.empty() && g_traffic[indices[0]] > 0.0)
+                   ? g_traffic[indices[0]] : 1.0;
+    const double maxLineWidth = 8.0;
+    int vSize = (int)indices.size();
 
     auto drawBand = [&](int from, int to, uint8_t r, uint8_t g, uint8_t b) {
         for (int k = from; k < to && k < vSize; k++) {
-            int i = verticesInCostOrder[k];
+            int i = indices[k];
             auto [x, y] = Deindex(i);
-            double t = g_traffic[i];
-            DrawTrafficInPixel(canvas, x, y, maxLineWidth * t / denom, r, g, b);
+            DrawTrafficInPixel(canvas, x, y, maxLineWidth * g_traffic[i] / denom, r, g, b);
         }
     };
 
-    drawBand(yellowPixelCount, vSize,          148, 245,  44); // green
-    drawBand(orangePixelCount, yellowPixelCount, 255, 255,   0); // yellow
-    drawBand(redPixelCount,    orangePixelCount, 255, 128,   0); // orange
-    drawBand(0,                redPixelCount,    255,   0,   0); // red
+    drawBand(yellowPixelCount, vSize,           148, 245,  44);
+    drawBand(orangePixelCount, yellowPixelCount, 255, 255,   0);
+    drawBand(redPixelCount,    orangePixelCount, 255, 128,   0);
+    drawBand(0,                redPixelCount,    255,   0,   0);
 
-    OutputCanvasAsPngFile(canvas, "moon-" + std::to_string(trialNumber) + ".png");
+    OutputCanvasAsPngFile(canvas, "moon.png");
 }
 
 // ---- Main --------------------------------------------------------------------
 
-int main() {
-    if (!LoadHeightmapFromTifImage()) return 1;
+void ApproximateAllPaths(int numTrials) {
+    if (!LoadHeightmapFromTifImage()) return;
     AnalyzeHeightmap();
-    ReadTrafficFromFile();
 
     const int MAX_THREADS = 12;
     std::mutex cv_mutex;
@@ -611,7 +545,7 @@ int main() {
     int active_count = 0;
     int trialNumber = 1;
 
-    while (true) {
+    for (int i = 0; i < numTrials; i++) {
         {
             std::unique_lock<std::mutex> lock(cv_mutex);
             cv.wait(lock, [&]{ return active_count < MAX_THREADS; });
@@ -624,7 +558,16 @@ int main() {
                 std::lock_guard<std::mutex> lock(cv_mutex);
                 active_count--;
             }
-            cv.notify_one();
+            cv.notify_all();
         }).detach();
     }
+
+    std::unique_lock<std::mutex> lock(cv_mutex);
+    cv.wait(lock, [&]{ return active_count == 0; });
+}
+
+int main() {
+    ApproximateAllPaths(100);
+    OutputTrafficAsPng();
+    return 0;
 }
