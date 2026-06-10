@@ -630,7 +630,7 @@ void SimulateTrafficThenPaveTheBusiestEdges(int runNumber) {
             if (IsEdgePaved(e.i, e.j)) continue;
             auto regularCost = CalcGreatCircleTravelTimeByIndex(e.i, e.j);
             if (!regularCost) continue;
-            float pavedCost = (float)(*regularCost * 0.7);
+            float pavedCost = (float)(*regularCost * 0.99);
             g_paved_edges[e.i].push_back({e.j, pavedCost});
             g_paved_edges[e.j].push_back({e.i, pavedCost});
             auto [x1, y1] = Deindex(e.i);
